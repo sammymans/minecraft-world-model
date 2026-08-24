@@ -1,0 +1,38 @@
+[project]
+name = "mcwm"
+version = "0.1.0"
+description = "A small, robotics-oriented Minecraft world model for learning"
+authors = [
+    { name = "sammymans", email = "sfarnum3@uwo.ca" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.11.1",
+    "numpy>=2.4.6",
+    "torch>=2.13.0",
+]
+
+[project.scripts]
+mcwm = "mcwm.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.4",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
