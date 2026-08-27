@@ -1,12 +1,12 @@
 .DS_Store
 .venv/
-__pycache__/
-*.py[cod]
 .pytest_cache/
 .ruff_cache/
-.coverage
-htmlcov/
+__pycache__/
+*.py[cod]
 
-data/
+data/*
+!data/manifests/
+data/manifests/*
+!data/manifests/*.jsonl
 artifacts/
-

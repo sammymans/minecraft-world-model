@@ -1,25 +1,19 @@
 # Documentation
 
-Start here:
+- [Project plan](PROJECT.md) — what we are building, how it works, the data
+  strategy, architecture, milestones, and completion criteria.
+- [Learning 01: public data](LEARNING_01_PUBLIC_DATA.md) — what a synchronized
+  frame/action episode contains and how to inspect the first real example.
+- [Learning 02: sequence dataset](LEARNING_02_DATASET.md) — filtering unsupported
+  transitions, aggregating time, processing frames, and sampling valid windows.
+- [Learning 03: visual autoencoder](LEARNING_03_AUTOENCODER.md) — compressing
+  frames, the sanity-overfit gate, held-out reconstruction, and honest results.
+- [Learning 04: local data pipeline](LEARNING_04_LOCAL_DATA_PIPELINE.md) — a
+  versioned manifest, resumable local downloads, explicit splits, verification,
+  and separate frame policies for representation and dynamics learning.
+- [Learning 05: latent dynamics](LEARNING_05_LATENT_DYNAMICS.md) — frozen visual
+  latents, action-conditioned residual prediction, one-step losses, baselines,
+  and the shuffled-action test.
 
-1. [First-Principles Roadmap](ROADMAP.md) — the full project, literature context, and V0–V2 progression.
-2. [V0: Explicit-State World Model](V0.md) — the data, model, training math, evaluation, MPC, compute requirements, and implementation sequence for the first version.
-3. [Running V0](RUN_V0.md) — the commands, expected outputs, and recommended code-reading order.
-4. [V0 Public-Data Results](RESULTS_V0.md) — the measured held-out results, ablations, and current limitations.
-
-## Document roles
-
-- **ROADMAP.md** answers: What are we building, why does it resemble robotics, and how do the versions fit together?
-- **V0.md** answers: What exactly goes into the first model, what comes out, and how will we train and evaluate it?
-- **RESULTS_V0.md** answers: Did the implementation actually work on public Minecraft data, and what evidence supports that conclusion?
-
-## Learning workflow
-
-This is a learning project, so implementation will be collaborative:
-
-1. Before a component is implemented, its purpose and inputs/outputs will be stated.
-2. After a component is implemented, its behavior and tests will be explained.
-3. At natural checkpoints, short questions will test understanding.
-4. Confusing concepts will be clarified before more complexity is added.
-
-The goal is not only to obtain working code. You should be able to explain why each component exists and how data moves through the system.
+`PROJECT.md` is the canonical scope. Features not listed there are out of scope
+unless we deliberately revise the plan.

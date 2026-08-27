@@ -1,81 +1,73 @@
-# Minecraft World Model
+# Tiny Minecraft Latent World Model
 
-A small, robotics-oriented project for learning action-conditioned world models from Minecraft trajectories.
+This is a deliberately small learning project about the core idea behind world
+models:
 
-The current V0 learns:
+> Compress an observation into a latent state, predict how an action changes
+> that state, and decode the predicted state so we can see the imagined future.
 
-$$
-\widehat{\Delta s_t}^{\mathrm{move}}
-=
-\Delta s_t^{\mathrm{kin}}+f_\theta(s_t,a_t,\Delta t)
-$$
+The complete project has four parts:
 
-from public OpenAI VPT state/action recordings. It uses numerical player state rather than pixels so the dynamics, data alignment, and rollout behavior remain easy to inspect.
+1. a Minecraft data recorder;
+2. a sequence dataset pipeline;
+3. a tiny latent world model; and
+4. an interactive imagined rollout.
 
-## Start here
+We will first prove that the pipeline works using a small subset of the public
+OpenAI VPT Minecraft dataset. Once the model can learn from those synchronized
+videos and actions, we will build our own recorder and feed its output through
+the same pipeline.
 
-- [Documentation index](docs/README.md)
-- [First-principles roadmap](docs/ROADMAP.md)
-- [Detailed V0 math and design](docs/V0.md)
-- [Hands-on V0 walkthrough](docs/RUN_V0.md)
-- [Measured public-data results](docs/RESULTS_V0.md)
+There is no agent, planning system, MPC, robotics layer, or high-resolution
+video generator in scope.
 
-## Setup
+The canonical project plan is [docs/PROJECT.md](docs/PROJECT.md). The hands-on
+lessons are:
 
-Install [uv](https://docs.astral.sh/uv/), then:
+1. [Public frames and actions](docs/LEARNING_01_PUBLIC_DATA.md)
+2. [Cleaning and sequence datasets](docs/LEARNING_02_DATASET.md)
+3. [Visual autoencoder](docs/LEARNING_03_AUTOENCODER.md)
+4. [Local dataset pipeline](docs/LEARNING_04_LOCAL_DATA_PIPELINE.md)
+5. [Action-conditioned latent dynamics](docs/LEARNING_05_LATENT_DYNAMICS.md)
 
-~~~bash
+## Reproduce the local dataset
+
+The committed manifests define exact public episode pairs and group-safe
+splits; large data files remain ignored locally. The current larger experiment
+uses `vpt_v2`.
+
+```bash
+uv run mcwm dataset-download --manifest data/manifests/vpt_v2.jsonl
+uv run mcwm dataset-preprocess \
+  --manifest data/manifests/vpt_v2.jsonl \
+  --output-dir data/processed/vpt_v2
+uv run mcwm dataset-verify \
+  --manifest data/manifests/vpt_v2.jsonl \
+  --processed-dir data/processed/vpt_v2
+uv run mcwm dataset-summary \
+  --manifest data/manifests/vpt_v2.jsonl \
+  --processed-dir data/processed/vpt_v2
+```
+
+## Try the first data pipeline
+
+```bash
 uv sync
-~~~
+uv run mcwm download-demo
+uv run mcwm inspect-demo
+uv run mcwm show-action 100
+uv run mcwm make-preview --start 3 --duration 15
+open artifacts/vpt-preview.mp4
+```
 
-No GPU is required for V0.
+The preview is real Minecraft footage with the synchronized keyboard and mouse
+action drawn on each frame. It is not a model prediction yet.
 
-## Quick workflow
+## Current status
 
-Download the tested 24-recording official VPT subset:
-
-~~~bash
-uv run mcwm download-vpt --limit 24
-~~~
-
-Audit timing, action coverage, alignment, and leakage-safe splits:
-
-~~~bash
-uv run mcwm audit-vpt
-~~~
-
-Train and evaluate the model:
-
-~~~bash
-uv run mcwm train-v0 --epochs 80
-~~~
-
-Reload and independently evaluate the saved checkpoint:
-
-~~~bash
-uv run mcwm evaluate-v0
-~~~
-
-Training defaults to four native VPT steps per learned transition
-(approximately 5 Hz). Use **--action-repeat 1** to experiment with native 20 Hz
-transitions.
-
-Outputs are written to **artifacts/v0/**:
-
-- **model.pt** — model, normalization statistics, and exact data manifest
-- **metrics.json** — learned and baseline metrics
-- **history.json** — training curve data
-- **rollout.png** — open-loop real versus predicted trajectory
-
-Run the known-dynamics smoke test without downloading Minecraft data:
-
-~~~bash
-uv run mcwm synthetic-v0 --epochs 30
-~~~
-
-Run project checks:
-
-~~~bash
-uv run pytest
-uv run ruff check .
-~~~
+The verified `vpt_v2` pipeline has 173 episodes, 12.81 training hours, and
+148,069 clean one-step examples. The selected 1.4-million-parameter autoencoder
+compresses each frame into 256 values and reaches 28.27 dB on the frozen
+held-out session. Its paired action-conditioned dynamics model beats decoded
+copy by 17.0%; shuffling actions worsens pixel MSE by 26.9%. The next milestone
+is multi-step recursive evaluation before the interactive rollout viewer.
