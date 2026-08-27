@@ -16,11 +16,13 @@ from mcwm.download import DEMO_STEM, download_episode
 from mcwm.dynamics import evaluate_saved_dynamics, train_dynamics
 from mcwm.interactive import launch_playground
 from mcwm.manifest import (
+    DATASET_SPLITS,
     DatasetManifest,
     dataset_status,
     download_manifest,
     expand_vpt10_manifest,
     preprocess_manifest,
+    split_manifest,
 )
 from mcwm.preview import create_preview, inspect_episode
 from mcwm.rollout import evaluate_saved_rollouts
@@ -80,8 +82,10 @@ def _add_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_spatial_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v3"))
-    parser.add_argument("--manifest", type=Path, default=Path("data/manifests/vpt_v3.jsonl"))
+    parser.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v4"))
+    parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
     parser.add_argument(
         "--autoencoder-checkpoint",
         type=Path,
@@ -108,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_download.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     dataset_download.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     dataset_download.add_argument(
-        "--split", choices=("all", "training", "validation"), default="all"
+        "--split", choices=("all", *DATASET_SPLITS), default="all"
     )
     dataset_download.add_argument("--workers", type=int, default=3)
     dataset_download.add_argument("--force", action="store_true")
@@ -124,6 +128,20 @@ def build_parser() -> argparse.ArgumentParser:
     expand_manifest.add_argument("--target-gib", type=float, default=10.0)
     expand_manifest.add_argument("--seed", type=int, default=7)
 
+    split_manifest_parser = commands.add_parser(
+        "dataset-split-manifest",
+        help="assign complete session groups to train, validation, and test",
+    )
+    split_manifest_parser.add_argument(
+        "--source-manifest", type=Path, default=Path("data/manifests/vpt_v4.jsonl")
+    )
+    split_manifest_parser.add_argument(
+        "--output", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    split_manifest_parser.add_argument("--validation-fraction", type=float, default=0.1)
+    split_manifest_parser.add_argument("--test-fraction", type=float, default=0.1)
+    split_manifest_parser.add_argument("--seed", type=int, default=7)
+
     dataset_preprocess = commands.add_parser(
         "dataset-preprocess", help="preprocess every raw pair selected by a manifest"
     )
@@ -131,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_preprocess.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     dataset_preprocess.add_argument("--output-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
     dataset_preprocess.add_argument(
-        "--split", choices=("all", "training", "validation"), default="all"
+        "--split", choices=("all", *DATASET_SPLITS), default="all"
     )
     dataset_preprocess.add_argument("--target-fps", type=float, default=10.0)
     dataset_preprocess.add_argument("--size", type=int, default=64)
@@ -210,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     evaluate.add_argument("--checkpoint", type=Path, default=Path("artifacts/autoencoder/best.pt"))
     evaluate.add_argument("--output-dir", type=Path, default=Path("artifacts/autoencoder-eval"))
-    evaluate.add_argument("--split", choices=("training", "validation"), default="validation")
+    evaluate.add_argument("--split", choices=DATASET_SPLITS, default="validation")
     evaluate.add_argument("--horizon", type=int, default=8)
     evaluate.add_argument("--batch-size", type=int, default=64)
     evaluate.add_argument("--count", type=int, default=8)
@@ -278,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=Path("artifacts/spatial-autoencoder-v3-eval")
     )
     spatial_evaluate.add_argument(
-        "--split", choices=("training", "validation"), default="validation"
+        "--split", choices=DATASET_SPLITS, default="validation"
     )
     spatial_evaluate.add_argument("--batch-size", type=int, default=64)
     spatial_evaluate.add_argument("--count", type=int, default=8)
@@ -313,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=Path("artifacts/dynamics-eval")
     )
     evaluate_dynamics_parser.add_argument(
-        "--split", choices=("training", "validation"), default="validation"
+        "--split", choices=DATASET_SPLITS, default="validation"
     )
     evaluate_dynamics_parser.add_argument("--count", type=int, default=6)
 
@@ -323,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_spatial_dynamics_data_arguments(train_spatial_dynamics_parser)
     train_spatial_dynamics_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v3")
+        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v4")
     )
     train_spatial_dynamics_parser.add_argument("--epochs", type=int, default=20)
     train_spatial_dynamics_parser.add_argument(
@@ -348,10 +366,13 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_spatial_dynamics_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/spatial-dynamics-v3/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
     )
     evaluate_spatial_dynamics_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v3-eval")
+        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v4-eval")
+    )
+    evaluate_spatial_dynamics_parser.add_argument(
+        "--split", choices=("validation", "test"), default="validation"
     )
     evaluate_spatial_dynamics_parser.add_argument("--count", type=int, default=6)
 
@@ -464,6 +485,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Expected raw data: {expected / 1024**3:.2f} GiB")
         return 0
 
+    if args.command == "dataset-split-manifest":
+        manifest = split_manifest(
+            DatasetManifest.load(args.source_manifest),
+            args.output,
+            validation_fraction=args.validation_fraction,
+            test_fraction=args.test_fraction,
+            seed=args.seed,
+        )
+        print(f"Wrote: {args.output}")
+        for split in DATASET_SPLITS:
+            episodes = manifest.select(split)
+            groups = {entry.group for entry in episodes}
+            raw_gib = sum(entry.video_bytes + entry.actions_bytes for entry in episodes) / 2**30
+            print(
+                f"{split:10s}: {len(groups):3d} groups, {len(episodes):3d} episodes, "
+                f"{raw_gib:5.2f} GiB"
+            )
+        return 0
+
     if args.command == "dataset-preprocess":
         manifest = DatasetManifest.load(args.manifest)
         preprocess_manifest(
@@ -490,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"independent groups: {status.groups}")
         print(f"training groups:    {status.training_groups}")
         print(f"validation groups:  {status.validation_groups}")
+        print(f"test groups:        {status.test_groups}")
         print(f"raw pairs complete: {status.raw_complete}/{status.episodes}")
         print(f"processed complete: {status.processed_complete}/{status.episodes}")
         print(f"expected raw size:  {status.expected_raw_bytes / 2**30:.2f} GiB")
@@ -505,21 +546,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "dataset-summary":
         try:
             manifest = DatasetManifest.load(args.manifest)
-            train_paths, validation_paths = manifest.processed_splits(args.processed_dir)
+            split_paths = {
+                split: manifest.processed_paths(args.processed_dir, split)
+                for split in DATASET_SPLITS
+                if manifest.select(split)
+            }
         except ValueError as error:
             raise SystemExit(str(error)) from error
-        train = SequenceDataset.from_paths(train_paths, horizon=args.horizon)
-        validation = SequenceDataset.from_paths(validation_paths, horizon=args.horizon)
-        print(f"training groups:   {len({entry.group for entry in manifest.select('training')})}")
-        print(f"training episodes: {len(train_paths)}")
-        print(f"training sequences: {len(train):,}")
-        validation_groups = {entry.group for entry in manifest.select("validation")}
-        print(f"validation groups:   {len(validation_groups)}")
-        print(f"validation episodes: {len(validation_paths)}")
-        print(f"validation sequences: {len(validation):,}")
-        print("validation episode names:")
-        for path in validation_paths:
-            print(f"  {path.stem}")
+        for split, paths in split_paths.items():
+            sequences = sum(
+                len(SequenceDataset.from_paths([path], horizon=args.horizon)) for path in paths
+            )
+            groups = {entry.group for entry in manifest.select(split)}
+            print(f"{split} groups:    {len(groups):,}")
+            print(f"{split} episodes:  {len(paths):,}")
+            print(f"{split} sequences: {sequences:,}")
         return 0
 
     if args.command == "show-sequence":
@@ -795,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             encode_batch_size=args.encode_batch_size,
             count=args.count,
+            split=args.split,
             seed=args.seed,
             requested_device=args.device,
         )

@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from mcwm.cleaning import RejectionReason
 from mcwm.dataset import ProcessedEpisode, SequenceDataset, split_episode_paths
-from mcwm.manifest import DatasetManifest
+from mcwm.manifest import DatasetManifest, DatasetSplit
 from mcwm.model import TinyAutoencoder
 
 matplotlib.use("Agg")
@@ -524,7 +524,7 @@ def evaluate_saved_autoencoder(
     checkpoint_path: Path,
     output_dir: Path,
     *,
-    split: str = "validation",
+    split: DatasetSplit = "validation",
     horizon: int = 8,
     manifest_path: Path | None = None,
     batch_size: int = 64,
@@ -532,13 +532,16 @@ def evaluate_saved_autoencoder(
     requested_device: str = "auto",
 ) -> EvaluationResult:
     """Recreate metrics and visuals from a saved checkpoint."""
-    if split not in {"training", "validation"}:
-        raise ValueError("split must be 'training' or 'validation'")
     device = choose_device(requested_device)
-    training, validation, _, _ = load_frame_splits(
-        processed_dir, horizon=horizon, manifest_path=manifest_path
-    )
-    dataset = training if split == "training" else validation
+    if manifest_path is not None:
+        paths = DatasetManifest.load(manifest_path).processed_paths(processed_dir, split)
+        policy = "non_gui" if split == "training" else "valid_sequences"
+        dataset = FrameDataset.from_paths(paths, horizon=horizon, policy=policy)
+    else:
+        if split == "test":
+            raise ValueError("test evaluation requires an explicit manifest")
+        training, validation, _, _ = load_frame_splits(processed_dir, horizon=horizon)
+        dataset = training if split == "training" else validation
     model, checkpoint = load_autoencoder_checkpoint(checkpoint_path, device)
     metrics = evaluate_autoencoder(model, dataset, device, batch_size=batch_size)
     grid = output_dir / f"{split}-reconstructions.png"

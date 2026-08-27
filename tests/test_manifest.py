@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from mcwm.manifest import DatasetManifest, dataset_status, expand_vpt10_manifest
+from mcwm.manifest import (
+    DatasetManifest,
+    dataset_status,
+    expand_vpt10_manifest,
+    split_manifest,
+)
 
 
 def _record(episode: str, split: str) -> dict:
@@ -73,6 +78,7 @@ def test_dataset_status_checks_manifest_file_sizes(tmp_path: Path) -> None:
     assert status.raw_complete == 1
     assert status.processed_complete == 0
     assert status.expected_raw_bytes == 14
+    assert status.test_groups == 0
 
 
 def test_expansion_uses_live_matched_pairs_and_preserves_validation(tmp_path: Path) -> None:
@@ -109,3 +115,60 @@ def test_expansion_uses_live_matched_pairs_and_preserves_validation(tmp_path: Pa
     }
     assert "missing-actions" not in expanded.select("training")[-1].episode
     assert "empty-actions" not in expanded.select("training")[-1].episode
+
+
+def test_three_way_split_is_deterministic_group_safe_and_preserves_holdout(
+    tmp_path: Path,
+) -> None:
+    records = [
+        _record(
+            f"player-{index:02d}-abc123-20260101-{120000 + index:06d}",
+            "validation" if index == 0 else "training",
+        )
+        for index in range(20)
+    ]
+    source_path = tmp_path / "source.jsonl"
+    _write_manifest(source_path, records)
+    source = DatasetManifest.load(source_path)
+
+    first = split_manifest(
+        source,
+        tmp_path / "first.jsonl",
+        validation_fraction=0.2,
+        test_fraction=0.2,
+        seed=9,
+    )
+    split_manifest(
+        source,
+        tmp_path / "second.jsonl",
+        validation_fraction=0.2,
+        test_fraction=0.2,
+        seed=9,
+    )
+
+    assert (tmp_path / "first.jsonl").read_text() == (tmp_path / "second.jsonl").read_text()
+    assert len({entry.group for entry in first.select("training")}) == 12
+    assert len({entry.group for entry in first.select("validation")}) == 4
+    assert len({entry.group for entry in first.select("test")}) == 4
+    assert records[0]["group"] in {entry.group for entry in first.select("validation")}
+    assert records[0]["group"] not in {entry.group for entry in first.select("test")}
+
+
+def test_three_way_split_rejects_impossible_fractions(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.jsonl"
+    _write_manifest(
+        source_path,
+        [
+            _record("player-one-abc123-20260101-120000", "training"),
+            _record("player-two-abc123-20260101-120001", "training"),
+            _record("player-three-abc123-20260101-120002", "validation"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="sum to less than one"):
+        split_manifest(
+            DatasetManifest.load(source_path),
+            tmp_path / "split.jsonl",
+            validation_fraction=0.5,
+            test_fraction=0.5,
+        )

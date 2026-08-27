@@ -69,10 +69,7 @@ def test_spatial_prediction_loss_backpropagates_only_into_dynamics(tmp_path: Pat
     dataset = SpatialEncodedDynamicsDataset.from_paths(
         [path], autoencoder, torch.device("cpu"), maximum_transitions=2
     )
-    batch = {
-        name: torch.stack([dataset[index][name] for index in range(2)])
-        for name in dataset[0]
-    }
+    batch = {name: torch.stack([dataset[index][name] for index in range(2)]) for name in dataset[0]}
     statistics = dataset.normalization_statistics()
     dynamics = SpatialLatentDynamics(
         latent_channels=4,
@@ -121,3 +118,28 @@ def test_spatial_dynamics_checkpoint_round_trip(tmp_path: Path) -> None:
     assert metadata["model_type"] == "spatial_latent_dynamics"
     for expected, actual in zip(dynamics.parameters(), loaded.parameters(), strict=True):
         assert torch.equal(expected, actual)
+
+
+def test_spatial_dynamics_rejects_unversioned_checkpoint(tmp_path: Path) -> None:
+    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
+    autoencoder_path = tmp_path / "autoencoder.pt"
+    autoencoder_path.write_bytes(b"stable checkpoint")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("{}\n", encoding="utf-8")
+    checkpoint = tmp_path / "dynamics.pt"
+    _save_checkpoint(
+        checkpoint,
+        dynamics,
+        history={"train": [1.0]},
+        autoencoder_checkpoint=autoencoder_path,
+        autoencoder_sha256="hash",
+        manifest_path=manifest,
+        latent_weight=1.0,
+        pixel_weight=1.0,
+    )
+    payload = torch.load(checkpoint, weights_only=True)
+    del payload["architecture"]
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match="incompatible or unversioned"):
+        load_spatial_dynamics_checkpoint(checkpoint, torch.device("cpu"))

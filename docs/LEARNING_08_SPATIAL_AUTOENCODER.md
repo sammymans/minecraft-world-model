@@ -171,6 +171,14 @@ $0.00674$).
 This passes the representation gate. It is **not** evidence that the world
 model works yet: this experiment tests only $D(E(o_t))$, not future prediction.
 
+### Gate 3: broad V4 test
+
+After the representation architecture was frozen, the selected checkpoint was
+evaluated once on 61,831 eligible frames from 70 independent V4 test groups. It
+reaches L1 $0.007824$, MSE $0.000208$, PSNR $36.82$ dB, and an edge-energy ratio
+of $0.969$. The small change from the original narrow validation result shows
+that the sharp reconstruction was not peculiar to one player's session.
+
 ## Commands
 
 Run the small memorization gate:

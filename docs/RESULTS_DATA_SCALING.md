@@ -33,9 +33,12 @@ The frozen validation set currently contains:
 618 clean eight-step sequences
 ```
 
-This fixed set makes the existing rows directly comparable. It is sufficient
-for the present learning experiment, although a future generalization study
-should add several new held-out groups as a second test set.
+This fixed set makes the existing V1–V3 rows directly comparable, but it is too
+narrow for choosing future models. `vpt_v4_split.jsonl` now provides 70
+validation groups and 70 different test groups. New V4 checkpoints use the
+broad validation split for selection and the broad test split only for the
+final report; those results must not be mixed into the narrow-split table as if
+the samples were identical.
 
 ## Dataset scale
 
@@ -44,6 +47,7 @@ should add several new held-out groups as a second test set.
 | `vpt_v1` | 2.16 GiB | 0.89 | 31,936 | 7,314 | 5,605 |
 | `vpt_v2` | 25.14 GiB | 12.81 | 461,191 | 148,069 | 117,348 |
 | `vpt_v3` | 50.05 GiB | — | 781,732 | — | 245,087 |
+| `vpt_v4` | 100.03 GiB | — | — | — | 398,354 train / 52,331 val / 49,906 test |
 
 `vpt_v2` therefore supplies approximately 20.2 times as many clean one-step
 examples as `vpt_v1`.
@@ -74,6 +78,11 @@ representation is a better foundation for future dynamics.
 | flat V2 checkpoint | 256 values | 392,924 | 0.021275 | 0.001491 | 28.27 dB | not recorded |
 | spatial V3 pilot | $16\times16\times16$ | 20,000 | **0.016133** | **0.000934** | **30.30 dB** | 0.711 |
 | spatial V3 selected | $16\times16\times16$ | 100,000 | **0.006743** | **0.000180** | **37.46 dB** | **0.974** |
+
+The same selected spatial checkpoint was evaluated once on 61,831 frames from
+the broad 70-group V4 test split: L1 $0.007824$, MSE $0.000208$, PSNR $36.82$
+dB, and edge-energy ratio $0.969$. This is a generalization check, not another
+training run or a directly interchangeable row in the narrow-split table.
 
 The pilot also passed a 32-frame memorization gate with L1 $0.006326$ and an
 edge-energy ratio of $0.896$. The selected result trained for 12 epochs; its

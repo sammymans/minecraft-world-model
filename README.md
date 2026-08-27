@@ -55,20 +55,21 @@ scripted mode.
 ## Reproduce the local dataset
 
 The committed manifests define exact public episode pairs and group-safe
-splits; large data files remain ignored locally. The current larger experiment
-uses `vpt_v3`.
+splits; large data files remain ignored locally. `vpt_v4.jsonl` defines the
+downloaded 100 GiB inventory, while `vpt_v4_split.jsonl` assigns its complete
+sessions to training, validation, and test.
 
 ```bash
-uv run mcwm dataset-download --manifest data/manifests/vpt_v3.jsonl
+uv run mcwm dataset-download --manifest data/manifests/vpt_v4.jsonl
 uv run mcwm dataset-preprocess \
-  --manifest data/manifests/vpt_v3.jsonl \
-  --output-dir data/processed/vpt_v3
+  --manifest data/manifests/vpt_v4.jsonl \
+  --output-dir data/processed/vpt_v4
 uv run mcwm dataset-verify \
-  --manifest data/manifests/vpt_v3.jsonl \
-  --processed-dir data/processed/vpt_v3
+  --manifest data/manifests/vpt_v4_split.jsonl \
+  --processed-dir data/processed/vpt_v4
 uv run mcwm dataset-summary \
-  --manifest data/manifests/vpt_v3.jsonl \
-  --processed-dir data/processed/vpt_v3
+  --manifest data/manifests/vpt_v4_split.jsonl \
+  --processed-dir data/processed/vpt_v4
 ```
 
 ## Try the first data pipeline
@@ -87,22 +88,40 @@ action drawn on each frame. It is not a model prediction yet.
 
 ## Current status
 
-The verified `vpt_v3` pipeline has 345 episodes, 343 training episodes, 245,087
-clean eight-step training sequences, and 781,732 usable representation frames.
+The verified `vpt_v4` pipeline contains 707 episodes from 705 independent
+player/session groups and 100.03 GiB of synchronized raw data. Its deterministic
+group-safe split is:
+
+| split | groups | episodes | raw size | clean eight-step sequences |
+|---|---:|---:|---:|---:|
+| training | 565 | 566 | 80.35 GiB | 398,354 |
+| validation | 70 | 71 | 9.85 GiB | 52,331 |
+| test | 70 | 70 | 9.82 GiB | 49,906 |
+
+Validation is used for training decisions; test remains untouched until a model
+is selected. The original narrow held-out session remains in validation because
+it has already been used during model development; the test sessions are new.
 The 253,395-parameter spatial autoencoder reaches 37.46 dB, L1 0.00674, and a
 0.974 edge-energy ratio on the frozen held-out episodes, versus 28.27 dB and
-L1 0.02128 for the old flat-latent model.
+L1 0.02128 for the old flat-latent model. A final evaluation over 61,831 frames
+from the new 70-session test split remains strong at 36.82 dB, L1 0.00782, and
+a 0.969 edge-energy ratio.
 
-Spatial action-conditioned dynamics now exist and beat their baselines: 0.003941
-held-out latent MSE against a 0.007160 copy baseline, 0.029529 pixel L1 against
-0.033883 for decoded copy, and shuffled actions cost 37.6% of the model's own
-error. Measured on a 30,000-transition bounded pilot.
+The historical 30,000-transition V3 pilot showed that spatial
+action-conditioned dynamics can beat their baselines: 0.003941 held-out latent
+MSE against a 0.007160 copy baseline, 0.029529 pixel L1 against 0.033883 for
+decoded copy, and shuffled actions cost 37.6% of the model's own error. The
+experimental checkpoint was overwritten before its architecture was reverted,
+so it is evidence rather than the selected runnable model. Checkpoints are now
+architecture-versioned and the chosen baseline must be retrained on V4.
 
 Two caveats. An ablation at matched data scale showed **data scale, not
 architecture, drove the improvement**, and the pilot used 30,000 of 245,087
-available transitions. And the held-out split is a single player session, which
-is too narrow for fine-grained comparisons. Both point the same way: more data.
-See [Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
+available transitions. It also used the old single-session validation split,
+which is too narrow for fine-grained comparisons. The new V4 split addresses
+both issues for the retraining run. See
+[Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
 
-The next step is the larger `vpt_v4` dataset, which also allows several
-independent held-out groups. The recorder remains last.
+The next step is to retrain the versioned additive spatial dynamics checkpoint
+on the V4 split, select it using validation, and report final performance once
+on test. The recorder remains last.

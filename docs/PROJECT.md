@@ -293,11 +293,12 @@ Deliverables:
 Completion test: one command shows a batch with shapes and an ordered visual
 sequence whose actions make sense.
 
-Status: complete. Dataset `vpt_v3` contains 345 public episodes, split into 343
-training episodes and two frozen validation episodes, processed into 10 Hz,
-$64\times64$ canonical episodes. It provides 781,732 usable representation
-frames and 245,087 clean eight-step training sequences while preserving the
-original frozen validation group.
+Status: complete. Dataset `vpt_v4` contains 707 public episodes from 705
+independent groups, processed into 10 Hz, $64\times64$ canonical episodes. The
+group-safe 80/10/10 assignment provides 398,354 training, 52,331 validation,
+and 49,906 test eight-step sequences. Validation and test contain 70 independent
+groups each; the original narrow held-out session remains untouched inside
+test.
 
 ### Milestone 3 — visual autoencoder
 
@@ -333,11 +334,12 @@ Deliverables:
 Completion test: predictions on held-out sequences change with the supplied
 action, and shuffling actions makes prediction worse.
 
-Status: V1 complete; spatial replacement pending. On the unchanged held-out
-session, the V1 model beats decoded copy by 17.0%, and shuffling actions worsens
-pixel MSE by 26.9%. The controlled old-encoder experiment improves from a 0.2%
-to a 24.0% latent shuffled-action penalty when dynamics data grows from 7,314
-to 148,069 clean examples.
+Status: V1 complete; spatial retraining pending. A historical 30,000-transition
+spatial pilot beat decoded copy and became 37.6% worse when actions were
+shuffled, but its checkpoint was overwritten during an architecture experiment.
+Checkpoints are now architecture-versioned, and the selected additive baseline
+must be retrained using the broad V4 validation split before this milestone is
+complete.
 
 ### Milestone 5 — open-loop evaluation
 
@@ -351,11 +353,11 @@ Deliverables:
 Completion test: the model beats the copy-frame baseline for at least a short
 horizon and produces visually interpretable rollouts.
 
-Status: complete. Across 288 held-out 20-step windows, recursive predictions
-beat frozen decoded copy at every measured horizon. Correct actions beat
-mismatched actions throughout, while pixel MSE grows gradually from $0.0093$ at
-one step to $0.0440$ at 20 steps. Visual predictions remain recognizable but
-blur and under-follow large changes.
+Status: V1 complete; spatial replacement pending. Across 288 held-out 20-step
+windows, V1 recursive predictions beat frozen decoded copy at every measured
+horizon. Correct actions beat mismatched actions throughout, while pixel MSE
+grows gradually from $0.0093$ at one step to $0.0440$ at 20 steps. Visual
+predictions remain recognizable but blur and under-follow large changes.
 
 ### Milestone 6 — interactive rollout
 

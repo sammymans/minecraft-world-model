@@ -26,6 +26,9 @@
   the first interactive model blurred, decoder-oracle diagnosis, the spatial
   latent redesign, edge-aware reconstruction, and the gates before retraining
   dynamics.
+- [Learning 09: spatial dynamics](LEARNING_09_SPATIAL_DYNAMICS.md) — spatial
+  residual prediction, action-sensitivity evidence, deterministic blur, the
+  broad V4 split, and the next retraining gate.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

@@ -140,6 +140,54 @@ The verified local `vpt_v2` snapshot contains:
 The previous split provided 7,314 one-step examples, so this is a 20.2-times
 increase in usable dynamics examples while evaluation stays fixed.
 
+## Dataset version `vpt_v4`: separate validation and test
+
+The earlier frozen evaluation set contained 978 frames from two consecutive
+episodes belonging to one session. That is much more than two images, but it is
+still only one person's gameplay distribution. It is too narrow for choosing
+between models and then honestly claiming generalization.
+
+There is no universal requirement that machine-learning data use exactly
+70/15/15. Independence and sufficient coverage matter more than the familiar
+ratio. At this scale, an 80/10/10 split leaves roughly 10 GiB in both validation
+and test, so we retain more training data without making evaluation small.
+
+The split is performed on complete player/session groups:
+
+$$
+g_i=g_j\implies\operatorname{split}(i)=\operatorname{split}(j),
+$$
+
+and uses three distinct roles:
+
+- training fits parameters;
+- validation chooses checkpoints and architecture; and
+- test is opened only after those decisions are frozen.
+
+Generate the assignment manifest without copying or preprocessing data again:
+
+```bash
+uv run mcwm dataset-split-manifest \
+  --source-manifest data/manifests/vpt_v4.jsonl \
+  --output data/manifests/vpt_v4_split.jsonl \
+  --validation-fraction 0.10 \
+  --test-fraction 0.10 \
+  --seed 7
+```
+
+The verified result is:
+
+| split | independent groups | episodes | raw size | clean eight-step sequences |
+|---|---:|---:|---:|---:|
+| training | 565 | 566 | 80.35 GiB | 398,354 |
+| validation | 70 | 71 | 9.85 GiB | 52,331 |
+| test | 70 | 70 | 9.82 GiB | 49,906 |
+
+The original held-out group remains in validation because prior experiments
+already used it for model development. It is never allowed back into training
+or relabeled as fresh test evidence. The source inventory manifest remains
+unchanged, making the split command deterministic and reproducible.
+
 ## Run the complete pipeline
 
 Create another deterministic byte-budgeted manifest with:

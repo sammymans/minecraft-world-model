@@ -17,7 +17,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from mcwm.dataset import ProcessedEpisode, SequenceDataset, split_episode_paths
-from mcwm.manifest import DatasetManifest
+from mcwm.manifest import DatasetManifest, DatasetSplit
 from mcwm.model import LatentDynamics, TinyAutoencoder
 from mcwm.training import choose_device, load_autoencoder_checkpoint, seed_everything
 
@@ -735,7 +735,7 @@ def evaluate_saved_dynamics(
     dynamics_checkpoint: Path,
     output_dir: Path,
     *,
-    split: str = "validation",
+    split: DatasetSplit = "validation",
     manifest_path: Path | None = None,
     batch_size: int = 128,
     encode_batch_size: int = 128,
@@ -743,8 +743,6 @@ def evaluate_saved_dynamics(
     seed: int = 7,
     requested_device: str = "auto",
 ) -> DynamicsEvaluationResult:
-    if split not in {"training", "validation"}:
-        raise ValueError("split must be 'training' or 'validation'")
     device = choose_device(requested_device)
     dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
     _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
@@ -754,8 +752,15 @@ def evaluate_saved_dynamics(
     if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
         raise ValueError("autoencoder and dynamics latent dimensions do not match")
     autoencoder.requires_grad_(False)
-    training_paths, validation_paths = _processed_splits(processed_dir, manifest_path)
-    selected_paths = training_paths if split == "training" else validation_paths
+    if manifest_path is not None:
+        selected_paths = DatasetManifest.load(manifest_path).processed_paths(
+            processed_dir, split
+        )
+    else:
+        if split == "test":
+            raise ValueError("test evaluation requires an explicit manifest")
+        training_paths, validation_paths = _processed_splits(processed_dir, None)
+        selected_paths = training_paths if split == "training" else validation_paths
     dataset = EncodedDynamicsDataset.from_paths(
         selected_paths, autoencoder, device, encode_batch_size=encode_batch_size
     )

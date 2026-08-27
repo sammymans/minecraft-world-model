@@ -8,14 +8,15 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from mcwm.dataset import ProcessedEpisode, preprocess_episode
 from mcwm.download import download_url
 
-DatasetSplit = Literal["training", "validation"]
+DatasetSplit = Literal["training", "validation", "test"]
+DATASET_SPLITS: tuple[DatasetSplit, ...] = ("training", "validation", "test")
 
 VPT_CONTAINER_URL = "https://openaipublic.blob.core.windows.net/minecraft-rl"
 VPT_10_PREFIX = "data/10.0/"
@@ -57,7 +58,7 @@ class ManifestEpisode:
             raise ValueError(f"invalid episode{location}: {self.episode!r}")
         if self.group != self.episode.rsplit("-", 2)[0]:
             raise ValueError(f"group does not match episode{location}: {self.episode}")
-        if self.split not in {"training", "validation"}:
+        if self.split not in DATASET_SPLITS:
             raise ValueError(f"invalid split{location}: {self.split!r}")
         if not self.video_url.endswith(f"/{self.episode}.mp4"):
             raise ValueError(f"video URL does not match episode{location}")
@@ -110,25 +111,32 @@ class DatasetManifest:
         if leaked:
             raise ValueError(f"player/session groups cross dataset splits: {leaked}")
         splits = {entry.split for entry in self.episodes}
-        if splits != {"training", "validation"}:
+        if not {"training", "validation"}.issubset(splits):
             raise ValueError("dataset manifest needs training and validation episodes")
 
-    def select(self, split: str = "all") -> tuple[ManifestEpisode, ...]:
+    def select(self, split: DatasetSplit | Literal["all"] = "all") -> tuple[ManifestEpisode, ...]:
         if split == "all":
             return self.episodes
-        if split not in {"training", "validation"}:
-            raise ValueError("split must be all, training, or validation")
+        if split not in DATASET_SPLITS:
+            raise ValueError("split must be all, training, validation, or test")
         return tuple(entry for entry in self.episodes if entry.split == split)
 
-    def processed_splits(self, processed_dir: Path) -> tuple[list[Path], list[Path]]:
-        training = [entry.processed_path(processed_dir) for entry in self.select("training")]
-        validation = [entry.processed_path(processed_dir) for entry in self.select("validation")]
-        missing = [path for path in training + validation if not path.exists()]
+    def processed_paths(self, processed_dir: Path, split: DatasetSplit) -> list[Path]:
+        paths = [entry.processed_path(processed_dir) for entry in self.select(split)]
+        if not paths:
+            raise ValueError(f"dataset manifest has no {split} episodes")
+        missing = [path for path in paths if not path.exists()]
         if missing:
             raise ValueError(
                 f"processed manifest episodes are missing; first missing: {missing[0]}"
             )
-        return training, validation
+        return paths
+
+    def processed_splits(self, processed_dir: Path) -> tuple[list[Path], list[Path]]:
+        return (
+            self.processed_paths(processed_dir, "training"),
+            self.processed_paths(processed_dir, "validation"),
+        )
 
 
 @dataclass(frozen=True)
@@ -137,6 +145,7 @@ class DatasetStatus:
     groups: int
     training_groups: int
     validation_groups: int
+    test_groups: int
     raw_complete: int
     processed_complete: int
     expected_raw_bytes: int
@@ -166,6 +175,15 @@ def _list_blob_sizes(container_url: str, prefix: str) -> dict[str, int]:
         marker = root.findtext("NextMarker") or ""
         if not marker:
             return blobs
+
+
+def _write_manifest(path: Path, episodes: list[ManifestEpisode]) -> DatasetManifest:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(entry.__dict__, sort_keys=True) for entry in episodes) + "\n",
+        encoding="utf-8",
+    )
+    return DatasetManifest.load(path)
 
 
 def expand_vpt10_manifest(
@@ -227,10 +245,68 @@ def expand_vpt10_manifest(
             f"only found {selected_bytes:,} available bytes, below target {target_bytes:,}"
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    records = [json.dumps(entry.__dict__, sort_keys=True) for entry in selected]
-    output_path.write_text("\n".join(records) + "\n", encoding="utf-8")
-    return DatasetManifest.load(output_path)
+    return _write_manifest(output_path, selected)
+
+
+def split_manifest(
+    source: DatasetManifest,
+    output_path: Path,
+    *,
+    validation_fraction: float = 0.1,
+    test_fraction: float = 0.1,
+    seed: int = 7,
+) -> DatasetManifest:
+    """Create deterministic group-safe train/validation/test assignments.
+
+    Existing validation and test groups keep their roles so sessions used for
+    earlier model selection never become training or final-test evidence.
+    Remaining groups are shuffled once and assigned by group count, not by
+    individual episode.
+    """
+    if validation_fraction <= 0 or test_fraction <= 0:
+        raise ValueError("validation and test fractions must be positive")
+    if validation_fraction + test_fraction >= 1:
+        raise ValueError("validation and test fractions must sum to less than one")
+
+    groups = sorted({entry.group for entry in source.episodes})
+    if len(groups) < 3:
+        raise ValueError("a three-way split needs at least three independent groups")
+    test_count = max(1, round(len(groups) * test_fraction))
+    validation_count = max(1, round(len(groups) * validation_fraction))
+    if test_count + validation_count >= len(groups):
+        raise ValueError("split fractions leave no independent training group")
+
+    preserved_validation = {entry.group for entry in source.episodes if entry.split == "validation"}
+    preserved_test = {entry.group for entry in source.episodes if entry.split == "test"}
+    if len(preserved_validation) > validation_count:
+        raise ValueError("existing validation groups exceed the requested validation split")
+    if len(preserved_test) > test_count:
+        raise ValueError("existing test groups exceed the requested test split")
+    remaining = [
+        group
+        for group in groups
+        if group not in preserved_validation and group not in preserved_test
+    ]
+    random.Random(seed).shuffle(remaining)
+    needed_test = test_count - len(preserved_test)
+    test_groups = preserved_test | set(remaining[:needed_test])
+    needed_validation = validation_count - len(preserved_validation)
+    validation_groups = preserved_validation | set(
+        remaining[needed_test : needed_test + needed_validation]
+    )
+
+    assignments = {
+        group: (
+            "test"
+            if group in test_groups
+            else "validation"
+            if group in validation_groups
+            else "training"
+        )
+        for group in groups
+    }
+    episodes = [replace(entry, split=assignments[entry.group]) for entry in source.episodes]
+    return _write_manifest(output_path, episodes)
 
 
 def download_manifest(
@@ -331,13 +407,15 @@ def dataset_status(
                 if episode.model_fps != 10.0:
                     raise ValueError(f"processed episode is not 10 Hz: {processed_path}")
             processed_complete += 1
-    training_groups = {entry.group for entry in manifest.select("training")}
-    validation_groups = {entry.group for entry in manifest.select("validation")}
+    split_groups = {
+        split: {entry.group for entry in manifest.select(split)} for split in DATASET_SPLITS
+    }
     return DatasetStatus(
         episodes=len(manifest.episodes),
-        groups=len(training_groups | validation_groups),
-        training_groups=len(training_groups),
-        validation_groups=len(validation_groups),
+        groups=len(set().union(*split_groups.values())),
+        training_groups=len(split_groups["training"]),
+        validation_groups=len(split_groups["validation"]),
+        test_groups=len(split_groups["test"]),
         raw_complete=raw_complete,
         processed_complete=processed_complete,
         expected_raw_bytes=sum(

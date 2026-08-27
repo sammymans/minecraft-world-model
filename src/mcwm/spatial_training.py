@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from mcwm.manifest import DatasetManifest
+from mcwm.manifest import DatasetManifest, DatasetSplit
 from mcwm.model import SpatialAutoencoder
 from mcwm.training import (
     FrameDataset,
@@ -466,16 +466,18 @@ def evaluate_saved_spatial_autoencoder(
     checkpoint_path: Path,
     output_dir: Path,
     *,
-    split: str = "validation",
+    split: DatasetSplit = "validation",
     batch_size: int = 64,
     count: int = 8,
     requested_device: str = "auto",
 ) -> SpatialEvaluationResult:
-    if split not in {"training", "validation"}:
-        raise ValueError("split must be 'training' or 'validation'")
+    if split not in {"training", "validation", "test"}:
+        raise ValueError("split must be training, validation, or test")
     device = choose_device(requested_device)
-    training, validation, _, _ = load_frame_splits(processed_dir, manifest_path=manifest_path)
-    dataset = training if split == "training" else validation
+    manifest = DatasetManifest.load(manifest_path)
+    paths = manifest.processed_paths(processed_dir, split)
+    policy = "non_gui" if split == "training" else "valid_sequences"
+    dataset = FrameDataset.from_paths(paths, policy=policy)
     model, checkpoint = load_spatial_autoencoder_checkpoint(checkpoint_path, device)
     edge_weight = float(checkpoint["edge_weight"])
     metrics = evaluate_spatial_autoencoder(

@@ -18,16 +18,18 @@ from mcwm.dynamics import (
     DynamicsMetrics,
     _file_sha256,
     _metrics_payload,
-    _processed_splits,
     evaluate_dynamics,
     save_prediction_grid,
 )
+from mcwm.manifest import DatasetManifest, DatasetSplit
 from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics
 from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, seed_everything
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
+
+SPATIAL_DYNAMICS_ARCHITECTURE = "additive_residual_v1"
 
 
 @dataclass(frozen=True)
@@ -274,8 +276,9 @@ def _save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "format_version": 1,
+            "format_version": 2,
             "model_type": "spatial_latent_dynamics",
+            "architecture": SPATIAL_DYNAMICS_ARCHITECTURE,
             "model_state": dynamics.state_dict(),
             "latent_channels": dynamics.latent_channels,
             "action_dim": dynamics.action_dim,
@@ -299,6 +302,11 @@ def load_spatial_dynamics_checkpoint(
     checkpoint = torch.load(path, map_location=device, weights_only=True)
     if checkpoint.get("model_type") != "spatial_latent_dynamics":
         raise ValueError("checkpoint is not spatial latent dynamics")
+    if checkpoint.get("architecture") != SPATIAL_DYNAMICS_ARCHITECTURE:
+        raise ValueError(
+            "spatial dynamics checkpoint uses an incompatible or unversioned architecture; "
+            "retrain it with the current code"
+        )
     state = checkpoint["model_state"]
     dynamics = SpatialLatentDynamics(
         latent_channels=int(checkpoint["latent_channels"]),
@@ -363,7 +371,8 @@ def train_spatial_dynamics(
     autoencoder_sha256 = _file_sha256(autoencoder_checkpoint)
     autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
     autoencoder.requires_grad_(False)
-    train_paths, validation_paths = _processed_splits(processed_dir, manifest_path)
+    manifest = DatasetManifest.load(manifest_path)
+    train_paths, validation_paths = manifest.processed_splits(processed_dir)
     print(f"encoding up to {maximum_transitions:,} diverse training transitions...")
     training = SpatialEncodedDynamicsDataset.from_paths(
         train_paths,
@@ -531,36 +540,40 @@ def evaluate_saved_spatial_dynamics(
     batch_size: int = 32,
     encode_batch_size: int = 128,
     count: int = 6,
+    split: DatasetSplit = "validation",
     seed: int = 7,
     requested_device: str = "auto",
 ) -> SpatialDynamicsEvaluationResult:
+    if split not in {"validation", "test"}:
+        raise ValueError("spatial dynamics evaluation split must be validation or test")
     device = choose_device(requested_device)
     dynamics, metadata = load_spatial_dynamics_checkpoint(dynamics_checkpoint, device)
     if metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
         raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
     autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
     autoencoder.requires_grad_(False)
-    _, validation_paths = _processed_splits(processed_dir, manifest_path)
-    validation = SpatialEncodedDynamicsDataset.from_paths(
-        validation_paths,
+    selected_paths = DatasetManifest.load(manifest_path).processed_paths(processed_dir, split)
+    dataset = SpatialEncodedDynamicsDataset.from_paths(
+        selected_paths,
         autoencoder,
         device,
         encode_batch_size=encode_batch_size,
         seed=seed,
     )
     metrics = evaluate_dynamics(
-        dynamics, autoencoder, validation, device, batch_size=batch_size, seed=seed
+        dynamics, autoencoder, dataset, device, batch_size=batch_size, seed=seed
     )
-    grid = output_dir / "validation-one-step-predictions.png"
-    metrics_path = output_dir / "validation-metrics.json"
-    save_prediction_grid(dynamics, autoencoder, validation, grid, device, count=count)
+    grid = output_dir / f"{split}-one-step-predictions.png"
+    metrics_path = output_dir / f"{split}-metrics.json"
+    save_prediction_grid(dynamics, autoencoder, dataset, grid, device, count=count)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(
         json.dumps(
             {
                 "mode": "saved spatial dynamics evaluation",
-                "transitions": len(validation),
-                "latent_shape": validation.latent_shape,
+                "split": split,
+                "transitions": len(dataset),
+                "latent_shape": dataset.latent_shape,
                 "metrics": asdict(metrics),
             },
             indent=2,
@@ -572,7 +585,7 @@ def evaluate_saved_spatial_dynamics(
         metrics=metrics,
         comparison_grid=grid,
         metrics_path=metrics_path,
-        transitions=len(validation),
-        latent_shape=validation.latent_shape,
+        transitions=len(dataset),
+        latent_shape=dataset.latent_shape,
         device=str(device),
     )
