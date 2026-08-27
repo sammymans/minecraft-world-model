@@ -154,7 +154,8 @@ def test_ddim_sampling_recovers_the_target_a_perfect_denoiser_implies() -> None:
     # residual unchanged and sampling must return it. This checks the sampler
     # arithmetic independently of anything the model learns.
     model = _PerfectDenoiser(latent_channels=3, hidden_channels=8, blocks=1)
-    target = torch.randn(2, 3, 4, 4)
+    # Seeded so the target stays inside the sampler's clamp deterministically.
+    target = torch.randn(2, 3, 4, 4, generator=torch.Generator().manual_seed(3))
     model.set_target(target)
     current = torch.randn(2, 3, 4, 4)
     action = torch.zeros(2, 9)
@@ -180,3 +181,18 @@ def test_sampling_draws_different_futures_from_different_noise() -> None:
     assert not torch.allclose(first, second)
     with pytest.raises(ValueError, match="sampling steps must be positive"):
         model.sample(current, current, action, steps=0)
+    with pytest.raises(ValueError, match="residual_limit must be positive"):
+        model.sample(current, current, action, steps=4, residual_limit=0.0)
+
+
+def test_sampling_clamps_the_recovered_residual() -> None:
+    # An untrained model predicts zero noise, which at the noisiest timestep
+    # implies a residual hundreds of units wide. The clamp must bound it.
+    model = SpatialLatentDiffusion(latent_channels=3, hidden_channels=8, blocks=1)
+    current = torch.zeros(1, 3, 4, 4)
+    action = torch.zeros(1, 9)
+
+    sampled = model.sample(current, current, action, steps=3, residual_limit=2.0)
+    residual = model.normalize_residual(current, sampled)
+
+    assert residual.abs().max().item() <= 2.0 + 1e-5

@@ -495,11 +495,14 @@ class SpatialLatentDiffusion(nn.Module):
         action: torch.Tensor,
         *,
         steps: int = 20,
+        residual_limit: float = 4.0,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Draw one plausible next latent with a deterministic DDIM schedule."""
         if steps < 1:
             raise ValueError("sampling steps must be positive")
+        if residual_limit <= 0:
+            raise ValueError("residual_limit must be positive")
         steps = min(steps, self.diffusion_steps)
         schedule = torch.linspace(
             self.diffusion_steps - 1, 0, steps, device=current_latent.device
@@ -523,9 +526,13 @@ class SpatialLatentDiffusion(nn.Module):
             predicted_noise = self.forward(
                 previous_latent, current_latent, action, residual, batch_timesteps
             )
-            predicted_start = (residual - (1 - alpha_bar).sqrt() * predicted_noise) / (
-                alpha_bar.sqrt()
-            )
+            # At the noisiest timestep alpha_bar is ~1e-5, so this division
+            # amplifies any error in the predicted noise by about 300x. The
+            # diffused target is a unit-scale normalized residual, so clamping
+            # keeps an early mistake from dominating the whole trajectory.
+            predicted_start = (
+                (residual - (1 - alpha_bar).sqrt() * predicted_noise) / alpha_bar.sqrt()
+            ).clamp(-residual_limit, residual_limit)
             if position + 1 == len(schedule):
                 residual = predicted_start
             else:
