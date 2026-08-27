@@ -10,7 +10,9 @@ import torch
 from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics
 from mcwm.spatial_dynamics import (
     SpatialEncodedDynamicsDataset,
+    SpatialEncodedSequenceDataset,
     _prediction_loss,
+    _recursive_prediction_loss,
     _save_checkpoint,
     load_spatial_dynamics_checkpoint,
 )
@@ -143,3 +145,173 @@ def test_spatial_dynamics_rejects_unversioned_checkpoint(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="incompatible or unversioned"):
         load_spatial_dynamics_checkpoint(checkpoint, torch.device("cpu"))
+
+
+def _recursive_batch(dataset: SpatialEncodedSequenceDataset, count: int) -> dict[str, torch.Tensor]:
+    return {
+        name: torch.stack([dataset[index][name] for index in range(count)])
+        for name in dataset[0]
+    }
+
+
+def test_spatial_sequence_dataset_aligns_latent_and_action_windows(tmp_path: Path) -> None:
+    path = tmp_path / "episode.npz"
+    _write_episode(path, frames=12)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+    encoded = SpatialEncodedDynamicsDataset.from_paths(
+        [path], autoencoder, torch.device("cpu"), count_horizon=5, encode_batch_size=4
+    )
+
+    windows = SpatialEncodedSequenceDataset(encoded, horizon=5)
+    sample = windows[0]
+
+    # A five-step window needs two seed latents plus five targets, and one
+    # action per predicted step.
+    assert sample["latents"].shape == (7, 4, 16, 16)
+    assert sample["actions"].shape == (5, 9)
+    episode_index, current_index = windows.index[0]
+    timeline = encoded.latents[episode_index]
+    assert torch.equal(sample["latents"][1], timeline[current_index].float())
+    assert torch.equal(sample["latents"][-1], timeline[current_index + 5].float())
+
+
+def test_spatial_sequence_dataset_bounds_and_rejects_bad_horizons(tmp_path: Path) -> None:
+    path = tmp_path / "episode.npz"
+    _write_episode(path, frames=12)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+    encoded = SpatialEncodedDynamicsDataset.from_paths(
+        [path], autoencoder, torch.device("cpu"), count_horizon=3
+    )
+
+    assert len(SpatialEncodedSequenceDataset(encoded, horizon=3, maximum_sequences=2)) == 2
+    with pytest.raises(ValueError, match="horizon must be positive"):
+        SpatialEncodedSequenceDataset(encoded, horizon=0)
+    with pytest.raises(ValueError, match="no clean spatial sequences"):
+        SpatialEncodedSequenceDataset(encoded, horizon=64)
+
+
+def test_recursive_loss_consumes_its_own_predictions(tmp_path: Path) -> None:
+    path = tmp_path / "episode.npz"
+    _write_episode(path, frames=12)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+    autoencoder.requires_grad_(False)
+    encoded = SpatialEncodedDynamicsDataset.from_paths(
+        [path], autoencoder, torch.device("cpu"), count_horizon=3
+    )
+    windows = SpatialEncodedSequenceDataset(encoded, horizon=3)
+    batch = _recursive_batch(windows, 2)
+    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
+    seen: list[torch.Tensor] = []
+    original_forward = dynamics.forward
+
+    def record(previous, current, action):
+        seen.append(current)
+        return original_forward(previous, current, action)
+
+    dynamics.forward = record  # type: ignore[method-assign]
+    total, latent, pixel = _recursive_prediction_loss(
+        dynamics,
+        autoencoder,
+        batch,
+        latent_weight=1.0,
+        pixel_weight=1.0,
+        horizon_decay=0.8,
+    )
+    total.backward()
+
+    assert len(seen) == 3
+    # Steps two and three must run on predictions, never on the real latents.
+    assert torch.equal(seen[0], batch["latents"][:, 1])
+    for step in (1, 2):
+        assert not torch.equal(seen[step], batch["latents"][:, step + 1])
+    assert total.item() == pytest.approx(latent.item() + pixel.item())
+    assert any(parameter.grad is not None for parameter in dynamics.parameters())
+    assert all(parameter.grad is None for parameter in autoencoder.parameters())
+
+
+def test_recursive_loss_matches_one_step_loss_at_horizon_one(tmp_path: Path) -> None:
+    path = tmp_path / "episode.npz"
+    _write_episode(path, frames=10)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+    autoencoder.requires_grad_(False)
+    encoded = SpatialEncodedDynamicsDataset.from_paths(
+        [path], autoencoder, torch.device("cpu")
+    )
+    windows = SpatialEncodedSequenceDataset(encoded, horizon=1)
+    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
+
+    recursive, _, _ = _recursive_prediction_loss(
+        dynamics,
+        autoencoder,
+        _recursive_batch(windows, 2),
+        latent_weight=1.0,
+        pixel_weight=1.0,
+        horizon_decay=0.8,
+    )
+    single_step = {
+        "previous_latent": torch.stack([windows[index]["latents"][0] for index in range(2)]),
+        "current_latent": torch.stack([windows[index]["latents"][1] for index in range(2)]),
+        "target_latent": torch.stack([windows[index]["latents"][2] for index in range(2)]),
+        "action": torch.stack([windows[index]["actions"][0] for index in range(2)]),
+    }
+    expected, _, _ = _prediction_loss(
+        dynamics, autoencoder, single_step, latent_weight=1.0, pixel_weight=1.0
+    )
+
+    assert recursive.item() == pytest.approx(expected.item(), rel=1e-6)
+
+
+def test_recursive_loss_rejects_misaligned_windows() -> None:
+    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+    batch = {
+        "latents": torch.zeros(2, 4, 4, 16, 16),
+        "actions": torch.zeros(2, 3, 9),
+    }
+
+    with pytest.raises(ValueError, match="misaligned"):
+        _recursive_prediction_loss(
+            dynamics,
+            autoencoder,
+            batch,
+            latent_weight=1.0,
+            pixel_weight=1.0,
+            horizon_decay=0.8,
+        )
+    with pytest.raises(ValueError, match="horizon_decay"):
+        _recursive_prediction_loss(
+            dynamics,
+            autoencoder,
+            {"latents": torch.zeros(2, 5, 4, 16, 16), "actions": torch.zeros(2, 3, 9)},
+            latent_weight=1.0,
+            pixel_weight=1.0,
+            horizon_decay=0.0,
+        )
+
+
+def test_multi_step_checkpoint_records_its_training_objective(tmp_path: Path) -> None:
+    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
+    autoencoder_path = tmp_path / "autoencoder.pt"
+    autoencoder_path.write_bytes(b"stable checkpoint")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("{}\n", encoding="utf-8")
+    checkpoint = tmp_path / "dynamics.pt"
+    _save_checkpoint(
+        checkpoint,
+        dynamics,
+        history={"train": [1.0]},
+        autoencoder_checkpoint=autoencoder_path,
+        autoencoder_sha256="hash",
+        manifest_path=manifest,
+        latent_weight=1.0,
+        pixel_weight=1.0,
+        rollout_steps=5,
+        horizon_decay=0.8,
+        initial_checkpoint=tmp_path / "v0.pt",
+    )
+
+    _, metadata = load_spatial_dynamics_checkpoint(checkpoint, torch.device("cpu"))
+
+    assert metadata["rollout_steps"] == 5
+    assert metadata["horizon_decay"] == pytest.approx(0.8)
+    assert metadata["initial_checkpoint"] == str(tmp_path / "v0.pt")

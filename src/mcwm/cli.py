@@ -357,6 +357,35 @@ def build_parser() -> argparse.ArgumentParser:
     train_spatial_dynamics_parser.add_argument("--latent-weight", type=float, default=1.0)
     train_spatial_dynamics_parser.add_argument("--pixel-weight", type=float, default=1.0)
     train_spatial_dynamics_parser.add_argument("--patience", type=int, default=5)
+    train_spatial_dynamics_parser.add_argument(
+        "--rollout-steps",
+        type=int,
+        default=1,
+        help="recursive steps unrolled per training window; 1 keeps one-step training",
+    )
+    train_spatial_dynamics_parser.add_argument(
+        "--horizon-decay",
+        type=float,
+        default=0.8,
+        help="weight applied to each further recursive step",
+    )
+    train_spatial_dynamics_parser.add_argument(
+        "--gradient-clip",
+        type=float,
+        default=0.0,
+        help="global gradient-norm clip; 0 disables it",
+    )
+    train_spatial_dynamics_parser.add_argument(
+        "--maximum-validation-sequences",
+        type=int,
+        default=5_000,
+        help="bounded recursive validation windows scored after every epoch",
+    )
+    train_spatial_dynamics_parser.add_argument(
+        "--initial-checkpoint",
+        type=Path,
+        help="fine-tune this saved spatial dynamics checkpoint instead of starting fresh",
+    )
 
     evaluate_spatial_dynamics_parser = commands.add_parser(
         "evaluate-spatial-dynamics",
@@ -366,10 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_spatial_dynamics_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4-multistep/best.pt"),
     )
     evaluate_spatial_dynamics_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v4-eval")
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/spatial-dynamics-v4-multistep-eval"),
     )
     evaluate_spatial_dynamics_parser.add_argument(
         "--split", choices=("validation", "test"), default="validation"
@@ -383,10 +414,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_rollout_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4-multistep/best.pt"),
     )
     evaluate_rollout_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/spatial-rollout-v4")
+        "--output-dir", type=Path, default=Path("artifacts/spatial-rollout-v4-multistep")
     )
     evaluate_rollout_parser.add_argument(
         "--horizons", type=int, nargs="+", default=(1, 2, 5, 10, 20)
@@ -416,7 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     play_rollout_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4-multistep/best.pt"),
     )
     play_rollout_parser.add_argument(
         "--sample-index",
@@ -805,6 +836,11 @@ def main(argv: list[str] | None = None) -> int:
             latent_weight=args.latent_weight,
             pixel_weight=args.pixel_weight,
             patience=args.patience,
+            rollout_steps=args.rollout_steps,
+            horizon_decay=args.horizon_decay,
+            gradient_clip=args.gradient_clip,
+            maximum_validation_sequences=args.maximum_validation_sequences,
+            initial_checkpoint=args.initial_checkpoint,
             seed=args.seed,
             requested_device=args.device,
         )
@@ -812,7 +848,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"device:                      {result.device}")
         print(f"latent shape:                {result.latent_shape}")
         print(f"dynamics parameters:         {result.parameter_count:,}")
-        print(f"training transitions:        {result.training_transitions:,}")
+        print(f"recursive training steps:    {result.rollout_steps}")
+        print(f"training windows:            {result.training_transitions:,}")
         print(f"encoded training frames:     {result.encoded_frames:,}")
         print(f"validation latent MSE:       {validation.latent_mse:.6f}")
         print(f"copy baseline latent MSE:    {validation.copy_latent_mse:.6f}")

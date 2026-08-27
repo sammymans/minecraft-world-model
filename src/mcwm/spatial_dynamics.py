@@ -44,6 +44,7 @@ class SpatialDynamicsTrainingResult:
     encoded_frames: int
     latent_shape: tuple[int, int, int]
     device: str
+    rollout_steps: int = 1
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         device: torch.device,
         *,
         maximum_transitions: int | None = None,
+        count_horizon: int = 1,
         encode_batch_size: int = 128,
         seed: int = 7,
     ) -> SpatialEncodedDynamicsDataset:
@@ -106,6 +108,8 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
             raise ValueError("encode_batch_size must be positive")
         if maximum_transitions is not None and maximum_transitions < 1:
             raise ValueError("maximum_transitions must be positive when supplied")
+        if count_horizon < 1:
+            raise ValueError("count_horizon must be positive")
         ordered_paths = list(paths)
         if maximum_transitions is not None:
             rng = np.random.default_rng(seed)
@@ -116,7 +120,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         available_transitions = 0
         for path in ordered_paths:
             episode = ProcessedEpisode.load(path)
-            valid_transitions = len(SequenceDataset([episode], horizon=1))
+            valid_transitions = len(SequenceDataset([episode], horizon=count_horizon))
             if valid_transitions == 0:
                 continue
             chunks: list[torch.Tensor] = []
@@ -204,6 +208,53 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         )
 
 
+class SpatialEncodedSequenceDataset(Dataset[dict[str, torch.Tensor]]):
+    """Fixed-horizon latent windows used for differentiable recursive training."""
+
+    def __init__(
+        self,
+        encoded: SpatialEncodedDynamicsDataset,
+        *,
+        horizon: int,
+        maximum_sequences: int | None = None,
+        seed: int = 7,
+    ):
+        if horizon < 1:
+            raise ValueError("horizon must be positive")
+        if maximum_sequences is not None and maximum_sequences < 1:
+            raise ValueError("maximum_sequences must be positive when supplied")
+        self.episodes = encoded.episodes
+        self.latents = encoded.latents
+        self.latent_shape = encoded.latent_shape
+        self.horizon = horizon
+        self.index = SequenceDataset(self.episodes, horizon=horizon).index
+        if maximum_sequences is not None and len(self.index) > maximum_sequences:
+            selected = torch.randperm(
+                len(self.index), generator=torch.Generator().manual_seed(seed)
+            )[:maximum_sequences]
+            self.index = [self.index[int(item)] for item in selected]
+        if not self.index:
+            raise ValueError("no clean spatial sequences were found")
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
+        episode_index, current_index = self.index[item]
+        stop = current_index + self.horizon
+        episode = self.episodes[episode_index]
+        return {
+            "latents": self.latents[episode_index][current_index - 1 : stop + 1].float(),
+            "actions": torch.from_numpy(
+                episode.actions[current_index:stop].astype(np.float32, copy=False)
+            ),
+        }
+
+    @property
+    def encoded_frames(self) -> int:
+        return sum(len(timeline) for timeline in self.latents)
+
+
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {name: value.to(device) for name, value in batch.items()}
 
@@ -228,6 +279,52 @@ def _prediction_loss(
         pixel_loss = nn.functional.mse_loss(predicted_frame, oracle_frame)
     else:
         pixel_loss = latent_loss.new_zeros(())
+    total = latent_weight * latent_loss + pixel_weight * pixel_loss
+    return total, latent_loss, pixel_loss
+
+
+def _recursive_prediction_loss(
+    dynamics: SpatialLatentDynamics,
+    autoencoder: SpatialAutoencoder,
+    batch: dict[str, torch.Tensor],
+    *,
+    latent_weight: float,
+    pixel_weight: float,
+    horizon_decay: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Backpropagate through a rollout that consumes its own predicted latents."""
+    latents = batch["latents"]
+    actions = batch["actions"]
+    if latents.ndim != 5 or actions.ndim != 3:
+        raise ValueError("recursive batches need latent and action time axes")
+    if len(latents) != len(actions) or latents.shape[1] != actions.shape[1] + 2:
+        raise ValueError("recursive latent and action timelines are misaligned")
+    if not 0 < horizon_decay <= 1:
+        raise ValueError("horizon_decay must be in (0, 1]")
+
+    previous = latents[:, 0]
+    current = latents[:, 1]
+    latent_total = current.new_zeros(())
+    pixel_total = current.new_zeros(())
+    weight_total = 0.0
+    for step in range(actions.shape[1]):
+        predicted = dynamics(previous, current, actions[:, step])
+        target = latents[:, step + 2]
+        weight = horizon_decay**step
+        normalized_error = (predicted - target) / dynamics.latent_std
+        latent_total = latent_total + weight * normalized_error.square().mean()
+        if pixel_weight:
+            predicted_frame = autoencoder.decode(predicted)
+            with torch.no_grad():
+                target_frame = autoencoder.decode(target)
+            pixel_total = pixel_total + weight * nn.functional.mse_loss(
+                predicted_frame, target_frame
+            )
+        weight_total += weight
+        previous, current = current, predicted
+
+    latent_loss = latent_total / weight_total
+    pixel_loss = pixel_total / weight_total
     total = latent_weight * latent_loss + pixel_weight * pixel_loss
     return total, latent_loss, pixel_loss
 
@@ -262,6 +359,38 @@ def _validation_objective(
     return tuple(float(value / examples) for value in totals)  # type: ignore[return-value]
 
 
+@torch.no_grad()
+def _recursive_validation_objective(
+    dynamics: SpatialLatentDynamics,
+    autoencoder: SpatialAutoencoder,
+    dataset: SpatialEncodedSequenceDataset,
+    device: torch.device,
+    *,
+    batch_size: int,
+    latent_weight: float,
+    pixel_weight: float,
+    horizon_decay: float,
+) -> tuple[float, float, float]:
+    dynamics.eval()
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    totals = np.zeros(3, dtype=np.float64)
+    examples = 0
+    for raw_batch in loader:
+        batch = _move_batch(raw_batch, device)
+        losses = _recursive_prediction_loss(
+            dynamics,
+            autoencoder,
+            batch,
+            latent_weight=latent_weight,
+            pixel_weight=pixel_weight,
+            horizon_decay=horizon_decay,
+        )
+        count = len(batch["actions"])
+        totals += np.array([float(loss) for loss in losses]) * count
+        examples += count
+    return tuple(float(value / examples) for value in totals)  # type: ignore[return-value]
+
+
 def _save_checkpoint(
     path: Path,
     dynamics: SpatialLatentDynamics,
@@ -272,6 +401,9 @@ def _save_checkpoint(
     manifest_path: Path,
     latent_weight: float,
     pixel_weight: float,
+    rollout_steps: int = 1,
+    horizon_decay: float = 1.0,
+    initial_checkpoint: Path | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -287,6 +419,11 @@ def _save_checkpoint(
             "history": history,
             "latent_weight": latent_weight,
             "pixel_weight": pixel_weight,
+            "rollout_steps": rollout_steps,
+            "horizon_decay": horizon_decay,
+            "initial_checkpoint": (
+                None if initial_checkpoint is None else str(initial_checkpoint)
+            ),
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "autoencoder_sha256": autoencoder_sha256,
             "dataset_manifest": str(manifest_path),
@@ -325,7 +462,7 @@ def load_spatial_dynamics_checkpoint(
     return dynamics, checkpoint
 
 
-def _save_curve(history: dict[str, list[float]], path: Path) -> None:
+def _save_curve(history: dict[str, list[float]], path: Path, *, rollout_steps: int = 1) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(7, 4))
     axis.plot(history["train"], label="training objective")
@@ -334,7 +471,10 @@ def _save_curve(history: dict[str, list[float]], path: Path) -> None:
     axis.plot(history["validation_pixel"], label="decoded pixel MSE")
     axis.set_xlabel("epoch")
     axis.set_ylabel("loss")
-    axis.set_title("Spatial action-conditioned dynamics")
+    title = "Spatial action-conditioned dynamics"
+    if rollout_steps > 1:
+        title = f"{title} ({rollout_steps}-step recursive objective)"
+    axis.set_title(title)
     axis.grid(alpha=0.25)
     axis.legend()
     figure.tight_layout()
@@ -359,6 +499,11 @@ def train_spatial_dynamics(
     latent_weight: float = 1.0,
     pixel_weight: float = 1.0,
     patience: int = 5,
+    rollout_steps: int = 1,
+    horizon_decay: float = 0.8,
+    gradient_clip: float = 0.0,
+    maximum_validation_sequences: int = 5_000,
+    initial_checkpoint: Path | None = None,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> SpatialDynamicsTrainingResult:
@@ -366,6 +511,15 @@ def train_spatial_dynamics(
         raise ValueError("training sizes and patience must be positive")
     if latent_weight < 0 or pixel_weight < 0 or latent_weight + pixel_weight == 0:
         raise ValueError("loss weights must be non-negative and not both zero")
+    if rollout_steps < 1:
+        raise ValueError("rollout_steps must be positive")
+    if not 0 < horizon_decay <= 1:
+        raise ValueError("horizon_decay must be in (0, 1]")
+    if gradient_clip < 0:
+        raise ValueError("gradient_clip must be non-negative")
+    if maximum_validation_sequences < 1:
+        raise ValueError("maximum_validation_sequences must be positive")
+    recursive = rollout_steps > 1
     seed_everything(seed)
     device = choose_device(requested_device)
     autoencoder_sha256 = _file_sha256(autoencoder_checkpoint)
@@ -373,16 +527,18 @@ def train_spatial_dynamics(
     autoencoder.requires_grad_(False)
     manifest = DatasetManifest.load(manifest_path)
     train_paths, validation_paths = manifest.processed_splits(processed_dir)
-    print(f"encoding up to {maximum_transitions:,} diverse training transitions...")
+    window = "windows" if recursive else "transitions"
+    print(f"encoding up to {maximum_transitions:,} diverse training {window}...")
     training = SpatialEncodedDynamicsDataset.from_paths(
         train_paths,
         autoencoder,
         device,
         maximum_transitions=maximum_transitions,
+        count_horizon=rollout_steps,
         encode_batch_size=encode_batch_size,
         seed=seed,
     )
-    print("encoding frozen validation transitions...")
+    print(f"encoding frozen validation {window}...")
     validation = SpatialEncodedDynamicsDataset.from_paths(
         validation_paths,
         autoencoder,
@@ -390,25 +546,55 @@ def train_spatial_dynamics(
         encode_batch_size=encode_batch_size,
         seed=seed,
     )
-    statistics = training.normalization_statistics()
-    dynamics = SpatialLatentDynamics(
-        latent_channels=training.latent_shape[0],
-        action_dim=9,
-        hidden_channels=hidden_channels,
-        blocks=blocks,
-        action_mean=statistics[0],
-        action_std=statistics[1],
-        latent_mean=statistics[2],
-        latent_std=statistics[3],
-        motion_mean=statistics[4],
-        motion_std=statistics[5],
-    ).to(device)
+    if initial_checkpoint is not None:
+        dynamics, initial_metadata = load_spatial_dynamics_checkpoint(
+            initial_checkpoint, device
+        )
+        if initial_metadata["autoencoder_sha256"] != autoencoder_sha256:
+            raise ValueError("the initial dynamics checkpoint uses a different autoencoder")
+        if dynamics.latent_channels != training.latent_shape[0]:
+            raise ValueError("the initial dynamics checkpoint uses a different latent shape")
+        print(
+            f"fine-tuning {initial_checkpoint} "
+            f"({dynamics.hidden_channels} channels, {dynamics.blocks} blocks); "
+            "its frozen normalization statistics are reused"
+        )
+    else:
+        statistics = training.normalization_statistics()
+        dynamics = SpatialLatentDynamics(
+            latent_channels=training.latent_shape[0],
+            action_dim=9,
+            hidden_channels=hidden_channels,
+            blocks=blocks,
+            action_mean=statistics[0],
+            action_std=statistics[1],
+            latent_mean=statistics[2],
+            latent_std=statistics[3],
+            motion_mean=statistics[4],
+            motion_std=statistics[5],
+        ).to(device)
     optimizer = torch.optim.AdamW(
         dynamics.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
     generator = torch.Generator().manual_seed(seed)
+    if recursive:
+        training_windows = SpatialEncodedSequenceDataset(
+            training,
+            horizon=rollout_steps,
+            maximum_sequences=maximum_transitions,
+            seed=seed,
+        )
+        validation_windows = SpatialEncodedSequenceDataset(
+            validation,
+            horizon=rollout_steps,
+            maximum_sequences=maximum_validation_sequences,
+            seed=seed,
+        )
+    else:
+        training_windows = training
+        validation_windows = validation
     loader = DataLoader(
-        training,
+        training_windows,
         batch_size=batch_size,
         shuffle=True,
         generator=generator,
@@ -430,28 +616,55 @@ def train_spatial_dynamics(
         for raw_batch in loader:
             batch = _move_batch(raw_batch, device)
             optimizer.zero_grad(set_to_none=True)
-            loss, _, _ = _prediction_loss(
-                dynamics,
-                autoencoder,
-                batch,
-                latent_weight=latent_weight,
-                pixel_weight=pixel_weight,
-            )
+            if recursive:
+                loss, _, _ = _recursive_prediction_loss(
+                    dynamics,
+                    autoencoder,
+                    batch,
+                    latent_weight=latent_weight,
+                    pixel_weight=pixel_weight,
+                    horizon_decay=horizon_decay,
+                )
+                count = len(batch["actions"])
+            else:
+                loss, _, _ = _prediction_loss(
+                    dynamics,
+                    autoencoder,
+                    batch,
+                    latent_weight=latent_weight,
+                    pixel_weight=pixel_weight,
+                )
+                count = len(batch["action"])
             loss.backward()
+            if gradient_clip:
+                nn.utils.clip_grad_norm_(dynamics.parameters(), gradient_clip)
             optimizer.step()
-            count = len(batch["action"])
             total += float(loss.detach()) * count
             examples += count
         train_loss = total / examples
-        validation_loss, validation_latent, validation_pixel = _validation_objective(
-            dynamics,
-            autoencoder,
-            validation,
-            device,
-            batch_size=batch_size,
-            latent_weight=latent_weight,
-            pixel_weight=pixel_weight,
-        )
+        if recursive:
+            validation_loss, validation_latent, validation_pixel = (
+                _recursive_validation_objective(
+                    dynamics,
+                    autoencoder,
+                    validation_windows,
+                    device,
+                    batch_size=batch_size,
+                    latent_weight=latent_weight,
+                    pixel_weight=pixel_weight,
+                    horizon_decay=horizon_decay,
+                )
+            )
+        else:
+            validation_loss, validation_latent, validation_pixel = _validation_objective(
+                dynamics,
+                autoencoder,
+                validation_windows,
+                device,
+                batch_size=batch_size,
+                latent_weight=latent_weight,
+                pixel_weight=pixel_weight,
+            )
         history["train"].append(train_loss)
         history["validation"].append(validation_loss)
         history["validation_latent"].append(validation_latent)
@@ -485,6 +698,9 @@ def train_spatial_dynamics(
         manifest_path=manifest_path,
         latent_weight=latent_weight,
         pixel_weight=pixel_weight,
+        rollout_steps=rollout_steps,
+        horizon_decay=horizon_decay,
+        initial_checkpoint=initial_checkpoint,
     )
     metrics = evaluate_dynamics(
         dynamics, autoencoder, validation, device, batch_size=batch_size, seed=seed
@@ -493,15 +709,26 @@ def train_spatial_dynamics(
     curve = output_dir / "training-curve.png"
     metrics_path = output_dir / "metrics.json"
     save_prediction_grid(dynamics, autoencoder, validation, grid, device)
-    _save_curve(history, curve)
+    _save_curve(history, curve, rollout_steps=rollout_steps)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(
         json.dumps(
             {
-                "mode": "spatial one-step latent dynamics",
-                "training_transitions": len(training),
+                "mode": (
+                    f"spatial {rollout_steps}-step recursive latent dynamics"
+                    if recursive
+                    else "spatial one-step latent dynamics"
+                ),
+                "rollout_steps": rollout_steps,
+                "horizon_decay": horizon_decay,
+                "gradient_clip": gradient_clip,
+                "initial_checkpoint": (
+                    None if initial_checkpoint is None else str(initial_checkpoint)
+                ),
+                "training_transitions": len(training_windows),
                 "encoded_training_frames": training.encoded_frames,
-                "validation_transitions": len(validation),
+                "validation_transitions": len(validation_windows),
+                "one_step_validation_transitions": len(validation),
                 "latent_shape": training.latent_shape,
                 "parameters": dynamics.parameter_count,
                 "device": str(device),
@@ -523,10 +750,11 @@ def train_spatial_dynamics(
         metrics_path=metrics_path,
         validation_metrics=metrics,
         parameter_count=dynamics.parameter_count,
-        training_transitions=len(training),
+        training_transitions=len(training_windows),
         encoded_frames=training.encoded_frames,
         latent_shape=training.latent_shape,
         device=str(device),
+        rollout_steps=rollout_steps,
     )
 
 

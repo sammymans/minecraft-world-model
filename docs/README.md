@@ -29,6 +29,10 @@
 - [Learning 09: spatial dynamics](LEARNING_09_SPATIAL_DYNAMICS.md) — spatial
   residual prediction, action-sensitivity evidence, deterministic blur, the
   broad V4 split, and the next retraining gate.
+- [Learning 10: multi-step training](LEARNING_10_MULTI_STEP_TRAINING.md) — why
+  recursive predictions drift, five-step unrolled training, and the measured
+  result: a horizon-scaling gain (-7.6% at five steps, -21% at twenty) that
+  leaves blur as the dominant failure and points at deterministic regression.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

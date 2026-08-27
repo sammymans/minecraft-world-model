@@ -126,8 +126,14 @@ uv run mcwm evaluate-spatial-dynamics \
 Measure recursive validation rollouts with:
 
 ```bash
-uv run mcwm evaluate-rollout --split validation
+uv run mcwm evaluate-rollout --split validation \
+  --dynamics-checkpoint artifacts/spatial-dynamics-v4/best.pt \
+  --output-dir artifacts/spatial-rollout-v4
 ```
+
+The evaluators now default to the recursively fine-tuned checkpoint from
+[Learning 10](LEARNING_10_MULTI_STEP_TRAINING.md), so reproducing the one-step
+V4 numbers above needs that checkpoint named explicitly.
 
 Launch the selected checkpoint in the browser with:
 
@@ -149,3 +155,7 @@ dynamics, recursive evaluation, and interactive rollout all share the selected
 spatial checkpoint. The next model improvement would address deterministic
 blur, likely with a discrete or probabilistic latent objective. Per the project
 scope, the next pipeline milestone is the Minecraft recorder.
+
+[Learning 10](LEARNING_10_MULTI_STEP_TRAINING.md) takes the first step: it
+separates exposure bias from deterministic regression by training on the
+model's own predictions, and measures how much of the blur each one owns.
