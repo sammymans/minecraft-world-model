@@ -19,6 +19,9 @@
 - [Learning 06: multi-step evaluation](LEARNING_06_MULTI_STEP_EVALUATION.md) —
   recursive open-loop prediction, error growth, baselines, failure modes, and
   the gate before interaction.
+- [Learning 07: interactive rollout](LEARNING_07_INTERACTIVE_ROLLOUT.md) — live
+  action construction, recursive latent state updates, viewer controls, and a
+  reproducible scripted mode.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

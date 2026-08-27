@@ -30,9 +30,23 @@ lessons are:
 4. [Local dataset pipeline](docs/LEARNING_04_LOCAL_DATA_PIPELINE.md)
 5. [Action-conditioned latent dynamics](docs/LEARNING_05_LATENT_DYNAMICS.md)
 6. [Multi-step recursive evaluation](docs/LEARNING_06_MULTI_STEP_EVALUATION.md)
+7. [Interactive latent rollout](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md)
 
 Measured scaling results are tracked in
 [docs/RESULTS_DATA_SCALING.md](docs/RESULTS_DATA_SCALING.md).
+
+## Play the world model
+
+Open the interactive rollout viewer using the selected V2 checkpoints:
+
+```bash
+uv run mcwm play-rollout
+```
+
+The viewer begins with two real held-out seed frames. After that, every image is
+recursively imagined from your controls; press `N` for one step or `P` to run.
+See [Learning 07](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md) for the controls and
+scripted mode.
 
 ## Reproduce the local dataset
 
@@ -76,4 +90,6 @@ held-out session. Its paired action-conditioned dynamics model beats decoded
 copy by 17.0%; shuffling actions worsens pixel MSE by 26.9%. Recursive
 predictions beat frozen copy through 20 held-out steps, although they become
 blurred and action influence weakens by two seconds. The next milestone is the
-first interactive rollout viewer and optional short-horizon rollout training.
+V3 scaling comparison and optional short-horizon rollout training. The first
+interactive viewer is implemented and uses the same recursive loop as the
+offline evaluator.

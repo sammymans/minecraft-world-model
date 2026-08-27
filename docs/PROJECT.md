@@ -361,6 +361,12 @@ Deliverables:
 Completion test: changing the controls produces visibly different imagined
 futures without reading new frames from Minecraft.
 
+Status: implemented. The local viewer accepts movement and camera controls,
+runs the dynamics model recursively at 10 Hz, and includes a reproducible
+headless script mode. The full V2 checkpoint path has been validated for 20
+imagined steps. Live manual action comparison remains the final qualitative
+check; expected limitations are blur and conservative motion.
+
 ### Milestone 7 — recorder replacement
 
 Deliverables:
