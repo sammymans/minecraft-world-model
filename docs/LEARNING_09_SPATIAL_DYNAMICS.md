@@ -65,15 +65,45 @@ for trusting any further tuning.
 
 That prerequisite is now resolved by `vpt_v4_split.jsonl`: 70 independent
 groups are used for validation and a different 70 groups are reserved for the
-final test. The original held-out session is part of test, so it never enters
-training. Historical V3 metrics above remain useful evidence, but they are not
+final test. The original held-out session remains in validation because earlier
+experiments already used it for model development. Historical V3 metrics above
+remain useful evidence, but they are not
 directly comparable to the new multi-session validation numbers.
+
+## The selected V4 result
+
+The versioned additive model trained for 20 epochs on 100,000 transitions
+sampled across the 565 training groups. No test session was used during
+training or checkpoint selection.
+
+| split | latent MSE | copy latent MSE | pixel L1 | decoded-copy L1 | shuffled latent MSE |
+|---|---:|---:|---:|---:|---:|
+| validation | **0.004292** | 0.008068 | **0.032997** | 0.040351 | 0.006401 |
+| final test | **0.003874** | 0.007246 | **0.030689** | 0.037488 | 0.005700 |
+
+The final test result confirms that the model beats copy and depends on the
+action outside the data used to select it.
+
+Recursive evaluation uses the model's own prediction as its next input. On
+5,000 final-test windows:
+
+| horizon | seconds | recursive pixel MSE | copy improvement | mismatched-action penalty |
+|---:|---:|---:|---:|---:|
+| 1 | 0.1 | 0.003608 | 49.0% | 108.3% |
+| 2 | 0.2 | 0.005655 | 48.9% | 103.7% |
+| 5 | 0.5 | 0.009933 | 45.4% | 79.3% |
+| 10 | 1.0 | 0.014907 | 38.3% | 50.3% |
+| 20 | 2.0 | 0.023640 | 20.8% | 22.9% |
+
+The model passes the quantitative rollout gate at every measured horizon.
+Visually, scene layout remains interpretable for short horizons but becomes
+smooth after repeated feedback. That is the current model limitation, not a UI
+problem.
 
 Checkpoints now store the exact spatial-dynamics architecture identifier. This
 prevents an experimental checkpoint from being silently paired with reverted
-model code. The old V3 artifact predates that identifier and must be retrained;
-its recorded metrics and images remain experiment evidence, not the selected
-runnable model.
+model code. The old V3 artifact predates that identifier and cannot be loaded;
+its replacement is the selected V4 checkpoint reported above.
 
 ## Running it
 
@@ -83,7 +113,7 @@ uv run mcwm train-spatial-dynamics \
   --manifest data/manifests/vpt_v4_split.jsonl \
   --autoencoder-checkpoint artifacts/spatial-autoencoder-v3/best.pt \
   --output-dir artifacts/spatial-dynamics-v4 \
-  --maximum-transitions 30000 --epochs 20
+  --maximum-transitions 100000 --epochs 20
 ```
 
 ```bash
@@ -93,8 +123,17 @@ uv run mcwm evaluate-spatial-dynamics \
   --split validation
 ```
 
-After architecture and training decisions are frozen, run the same command with
-`--split test` and a separate output directory exactly once.
+Measure recursive validation rollouts with:
+
+```bash
+uv run mcwm evaluate-rollout --split validation
+```
+
+Launch the selected checkpoint in the browser with:
+
+```bash
+uv run mcwm play-rollout --sample-index 20000
+```
 
 `--maximum-transitions` bounds the in-memory training latent cache. The next
 infrastructure refinement should be a simple on-disk latent cache before trying
@@ -102,6 +141,8 @@ to consume all 398,354 eight-step V4 training sequences.
 
 ## What comes next
 
-Retrain the versioned baseline on the new split, use validation for model
-selection, then restore recursive spatial evaluation. Only a selected model is
-evaluated on test or connected to the frontend.
+The V0 world-model loop is complete: representation, action-conditioned
+dynamics, recursive evaluation, and interactive rollout all share the selected
+spatial checkpoint. The next model improvement would address deterministic
+blur, likely with a discrete or probabilistic latent objective. Per the project
+scope, the next pipeline milestone is the Minecraft recorder.

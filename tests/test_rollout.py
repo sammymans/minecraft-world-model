@@ -67,6 +67,22 @@ def test_rollout_dataset_preserves_full_temporal_alignment() -> None:
     assert first["frames"].shape == (5, 3, 2, 2)
 
 
+def test_rollout_dataset_promotes_cached_half_latents_for_inference() -> None:
+    episode = _episode()
+    dataset = EncodedRolloutDataset([episode], [_latents(episode).half()], horizon=2)
+
+    assert dataset[0]["latents"].dtype == torch.float32
+
+
+def test_rollout_dataset_rejects_empty_sample_budget() -> None:
+    episode = _episode()
+
+    with pytest.raises(ValueError, match="maximum_examples must be positive"):
+        EncodedRolloutDataset(
+            [episode], [_latents(episode)], horizon=2, maximum_examples=0
+        )
+
+
 def test_recursive_rollout_feeds_predictions_back_without_future_latents() -> None:
     dynamics = _AddAction()
     previous = torch.tensor([[99.0]])
@@ -76,6 +92,22 @@ def test_recursive_rollout_feeds_predictions_back_without_future_latents() -> No
     predicted = recursive_latent_rollout(dynamics, previous, current, actions)
 
     assert predicted.tolist() == [[[1.0], [3.0], [6.0]]]
+
+
+def test_recursive_rollout_preserves_spatial_latent_shape() -> None:
+    class SpatialAdd(nn.Module):
+        def forward(self, previous, current, action):
+            del previous
+            return current + action[:, :1, None, None]
+
+    dynamics = SpatialAdd()
+    previous = torch.zeros((2, 3, 4, 4))
+    current = torch.zeros((2, 3, 4, 4))
+    actions = torch.ones((2, 5, 1))
+
+    predicted = recursive_latent_rollout(dynamics, previous, current, actions)
+
+    assert predicted.shape == (2, 5, 3, 4, 4)
 
 
 def test_copy_dynamics_matches_recursive_copy_baseline() -> None:

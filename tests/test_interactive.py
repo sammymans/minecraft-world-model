@@ -12,6 +12,7 @@ from mcwm.interactive import (
     make_live_action,
     parse_action_script,
 )
+from mcwm.model import SpatialLatentDynamics
 
 
 class _MouseDynamics(nn.Module):
@@ -89,3 +90,26 @@ def test_interactive_engine_recursively_feeds_back_predictions_and_resets() -> N
     assert engine.steps == 0
     assert engine.current_latent.item() == pytest.approx(0)
     assert np.array_equal(reset, np.zeros((2, 2, 3), dtype=np.uint8))
+
+
+class _SpatialDecoder(nn.Module):
+    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        return latents[:, :3]
+
+
+def test_interactive_engine_accepts_spatial_latents() -> None:
+    dynamics = SpatialLatentDynamics(latent_channels=3, hidden_channels=4, blocks=1)
+    latent = torch.zeros((1, 3, 2, 2))
+    engine = InteractiveRolloutEngine(
+        _SpatialDecoder(),
+        dynamics,
+        latent,
+        latent,
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        torch.device("cpu"),
+    )
+
+    frame = engine.step(make_action(("w",)))
+
+    assert frame.shape == (2, 2, 3)
+    assert engine.current_latent.shape == (1, 3, 2, 2)

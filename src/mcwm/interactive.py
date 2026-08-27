@@ -12,12 +12,23 @@ import torch
 
 from mcwm.dataset import SequenceDataset
 from mcwm.dynamics import (
+    _file_sha256,
     _processed_splits,
     _verify_autoencoder,
     load_dynamics_checkpoint,
 )
-from mcwm.model import LatentDynamics, TinyAutoencoder
+from mcwm.model import (
+    LatentDynamics,
+    SpatialAutoencoder,
+    SpatialLatentDynamics,
+    TinyAutoencoder,
+)
+from mcwm.spatial_dynamics import load_spatial_dynamics_checkpoint
+from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
+
+Autoencoder = TinyAutoencoder | SpatialAutoencoder
+Dynamics = LatentDynamics | SpatialLatentDynamics
 
 ACTION_NAMES = (
     "w",
@@ -151,8 +162,8 @@ class InteractiveRolloutEngine:
 
     def __init__(
         self,
-        autoencoder: TinyAutoencoder,
-        dynamics: LatentDynamics,
+        autoencoder: Autoencoder,
+        dynamics: Dynamics,
         previous_latent: torch.Tensor,
         current_latent: torch.Tensor,
         current_frame: np.ndarray,
@@ -160,7 +171,15 @@ class InteractiveRolloutEngine:
     ) -> None:
         if previous_latent.shape != current_latent.shape:
             raise ValueError("seed latents must have identical shapes")
-        if previous_latent.shape != (1, dynamics.latent_dim):
+        if hasattr(dynamics, "latent_dim"):
+            valid_shape = previous_latent.shape == (1, dynamics.latent_dim)
+        else:
+            valid_shape = (
+                previous_latent.ndim == 4
+                and previous_latent.shape[0] == 1
+                and previous_latent.shape[1] == dynamics.latent_channels
+            )
+        if not valid_shape:
             raise ValueError("seed latent shape does not match dynamics model")
         if current_frame.ndim != 3 or current_frame.shape[-1] != 3:
             raise ValueError("current_frame must be [height, width, RGB]")
@@ -179,8 +198,8 @@ class InteractiveRolloutEngine:
     @torch.no_grad()
     def from_seed(
         cls,
-        autoencoder: TinyAutoencoder,
-        dynamics: LatentDynamics,
+        autoencoder: Autoencoder,
+        dynamics: Dynamics,
         seed: RolloutSeed,
         device: torch.device,
     ) -> InteractiveRolloutEngine:
@@ -233,13 +252,26 @@ def _load_playground(
     requested_device: str,
 ) -> tuple[InteractiveRolloutEngine, RolloutSeed, int, torch.device]:
     device = choose_device(requested_device)
-    dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
-    _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
-    autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
-        autoencoder_checkpoint, device
-    )
-    if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
-        raise ValueError("autoencoder and dynamics latent dimensions do not match")
+    checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
+    if checkpoint.get("model_type") == "spatial_latent_dynamics":
+        dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
+            dynamics_checkpoint, device
+        )
+        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
+            autoencoder_checkpoint
+        ):
+            raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
+        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+        if autoencoder.latent_channels != dynamics.latent_channels:
+            raise ValueError("autoencoder and dynamics latent channels do not match")
+    else:
+        dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
+        _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
+        autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
+            autoencoder_checkpoint, device
+        )
+        if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
+            raise ValueError("autoencoder and dynamics latent dimensions do not match")
     autoencoder.requires_grad_(False)
     seed, seed_count = select_rollout_seed(processed_dir, manifest_path, sample_index)
     engine = InteractiveRolloutEngine.from_seed(autoencoder, dynamics, seed, device)

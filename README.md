@@ -107,21 +107,17 @@ L1 0.02128 for the old flat-latent model. A final evaluation over 61,831 frames
 from the new 70-session test split remains strong at 36.82 dB, L1 0.00782, and
 a 0.969 edge-energy ratio.
 
-The historical 30,000-transition V3 pilot showed that spatial
-action-conditioned dynamics can beat their baselines: 0.003941 held-out latent
-MSE against a 0.007160 copy baseline, 0.029529 pixel L1 against 0.033883 for
-decoded copy, and shuffled actions cost 37.6% of the model's own error. The
-experimental checkpoint was overwritten before its architecture was reverted,
-so it is evidence rather than the selected runnable model. Checkpoints are now
-architecture-versioned and the chosen baseline must be retrained on V4.
+The selected 255,376-parameter spatial dynamics checkpoint trained on 100,000
+V4 transitions. On 62,646 transitions from the final 70-group test split, it
+reaches latent MSE 0.003874 against 0.007246 for copy and pixel L1 0.03069
+against 0.03749 for decoded copy. Shuffling actions raises latent MSE to
+0.005700, so controls are load-bearing.
 
-Two caveats. An ablation at matched data scale showed **data scale, not
-architecture, drove the improvement**, and the pilot used 30,000 of 245,087
-available transitions. It also used the old single-session validation split,
-which is too narrow for fine-grained comparisons. The new V4 split addresses
-both issues for the retraining run. See
-[Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
+On 5,000 recursive test windows, the model beats frozen copy through every
+measured horizon from 1 to 20 steps. At 20 steps (2 seconds), pixel MSE is
+0.02364 versus 0.02985 for copy, and mismatched actions are 22.9% worse. Images
+still become smooth after several recursive steps; this is a small deterministic
+world model, not a crisp video generator. The spatial checkpoint now powers the
+local browser rollout. See [Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
 
-The next step is to retrain the versioned additive spatial dynamics checkpoint
-on the V4 split, select it using validation, and report final performance once
-on test. The recorder remains last.
+Try it with `uv run mcwm play-rollout`. The recorder remains last.

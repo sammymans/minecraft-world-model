@@ -127,7 +127,7 @@ def _action_text(action: np.ndarray) -> str:
         if value
     ]
     key_text = "+".join(keys) if keys else "IDLE"
-    return f"{key_text} · mouse {action[-2]:+.0f}, {action[-1]:+.0f}"
+    return f"{key_text} | mouse {action[-2]:+.0f}, {action[-1]:+.0f}"
 
 
 def _handler(controller: WebRolloutController) -> type[BaseHTTPRequestHandler]:

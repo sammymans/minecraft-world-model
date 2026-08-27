@@ -21,11 +21,25 @@ from mcwm.dynamics import (
     _verify_autoencoder,
     load_dynamics_checkpoint,
 )
-from mcwm.model import LatentDynamics, TinyAutoencoder
+from mcwm.manifest import DatasetManifest, DatasetSplit
+from mcwm.model import (
+    LatentDynamics,
+    SpatialAutoencoder,
+    SpatialLatentDynamics,
+    TinyAutoencoder,
+)
+from mcwm.spatial_dynamics import (
+    SpatialEncodedDynamicsDataset,
+    load_spatial_dynamics_checkpoint,
+)
+from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
+
+Autoencoder = TinyAutoencoder | SpatialAutoencoder
+Dynamics = LatentDynamics | SpatialLatentDynamics
 
 
 @dataclass(frozen=True)
@@ -86,22 +100,33 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
         latents: list[torch.Tensor],
         *,
         horizon: int,
+        maximum_examples: int | None = None,
+        seed: int = 7,
     ):
         if horizon < 1:
             raise ValueError("horizon must be positive")
+        if maximum_examples is not None and maximum_examples < 1:
+            raise ValueError("maximum_examples must be positive when supplied")
         if len(episodes) != len(latents):
             raise ValueError("each episode needs one latent timeline")
         for episode, episode_latents in zip(episodes, latents, strict=True):
-            if episode_latents.ndim != 2 or len(episode_latents) != len(episode.frames):
-                raise ValueError("latent timelines must be [time, latent_dim]")
-        latent_dims = {int(values.shape[1]) for values in latents}
-        if len(latent_dims) != 1:
-            raise ValueError("all latent timelines must use the same latent_dim")
+            if episode_latents.ndim not in {2, 4} or len(episode_latents) != len(
+                episode.frames
+            ):
+                raise ValueError("latent timelines must be flat or spatial with a time axis")
+        latent_shapes = {tuple(values.shape[1:]) for values in latents}
+        if len(latent_shapes) != 1:
+            raise ValueError("all latent timelines must use the same shape")
         self.episodes = episodes
         self.latents = latents
         self.horizon = horizon
         self.index = SequenceDataset(episodes, horizon=horizon).index
-        self.latent_dim = latent_dims.pop()
+        if maximum_examples is not None and len(self.index) > maximum_examples:
+            selected = torch.randperm(
+                len(self.index), generator=torch.Generator().manual_seed(seed)
+            )[:maximum_examples]
+            self.index = [self.index[int(item)] for item in selected]
+        self.latent_shape = latent_shapes.pop()
 
     @classmethod
     @torch.no_grad()
@@ -113,6 +138,8 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
         *,
         horizon: int,
         encode_batch_size: int = 128,
+        maximum_examples: int | None = None,
+        seed: int = 7,
     ) -> EncodedRolloutDataset:
         encoded = EncodedDynamicsDataset.from_paths(
             paths,
@@ -120,7 +147,13 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
             device,
             encode_batch_size=encode_batch_size,
         )
-        return cls(encoded.episodes, encoded.latents, horizon=horizon)
+        return cls(
+            encoded.episodes,
+            encoded.latents,
+            horizon=horizon,
+            maximum_examples=maximum_examples,
+            seed=seed,
+        )
 
     def __len__(self) -> int:
         return len(self.index)
@@ -130,7 +163,7 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
         episode = self.episodes[episode_index]
         stop = current_index + self.horizon
         return {
-            "latents": self.latents[episode_index][current_index - 1 : stop + 1],
+            "latents": self.latents[episode_index][current_index - 1 : stop + 1].float(),
             "frames": _frame_timeline(
                 episode.frames[current_index - 1 : stop + 1]
             ),
@@ -142,7 +175,7 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
 
 @torch.no_grad()
 def recursive_latent_rollout(
-    dynamics: LatentDynamics,
+    dynamics: Dynamics,
     previous_latent: torch.Tensor,
     current_latent: torch.Tensor,
     actions: torch.Tensor,
@@ -150,9 +183,7 @@ def recursive_latent_rollout(
     """Predict a latent timeline without reading any real future latent."""
     if previous_latent.shape != current_latent.shape:
         raise ValueError("seed latents must have the same shape")
-    if actions.ndim != previous_latent.ndim + 1:
-        raise ValueError("actions must add one time dimension to the latent batch")
-    if actions.shape[:-2] != current_latent.shape[:-1]:
+    if actions.ndim != 3 or actions.shape[0] != current_latent.shape[0]:
         raise ValueError("action batch shape does not match seed latent batch shape")
     predictions: list[torch.Tensor] = []
     previous = previous_latent
@@ -161,7 +192,7 @@ def recursive_latent_rollout(
         predicted = dynamics(previous, current, actions[..., step, :])
         predictions.append(predicted)
         previous, current = current, predicted
-    return torch.stack(predictions, dim=-2)
+    return torch.stack(predictions, dim=1)
 
 
 def _psnr(mse: float) -> float:
@@ -191,8 +222,8 @@ def _metrics_payload(metrics: RolloutHorizonMetrics) -> dict[str, float | int | 
 
 @torch.no_grad()
 def evaluate_rollouts(
-    dynamics: LatentDynamics,
-    autoencoder: TinyAutoencoder,
+    dynamics: Dynamics,
+    autoencoder: Autoencoder,
     dataset: EncodedRolloutDataset,
     device: torch.device,
     *,
@@ -388,8 +419,8 @@ def _to_bgr(frame: np.ndarray) -> np.ndarray:
 
 @torch.no_grad()
 def save_rollout_filmstrips(
-    dynamics: LatentDynamics,
-    autoencoder: TinyAutoencoder,
+    dynamics: Dynamics,
+    autoencoder: Autoencoder,
     dataset: EncodedRolloutDataset,
     path: Path,
     device: torch.device,
@@ -506,27 +537,64 @@ def evaluate_saved_rollouts(
     batch_size: int = 64,
     encode_batch_size: int = 128,
     count: int = 3,
+    maximum_examples: int = 5_000,
+    split: DatasetSplit = "validation",
     seed: int = 7,
     requested_device: str = "auto",
 ) -> RolloutEvaluationResult:
     horizons = _validate_horizons(horizons)
+    if split not in {"validation", "test"}:
+        raise ValueError("rollout evaluation split must be validation or test")
     device = choose_device(requested_device)
-    dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
-    _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
-    autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
-        autoencoder_checkpoint, device
-    )
-    if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
-        raise ValueError("autoencoder and dynamics latent dimensions do not match")
+    checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
+    spatial = checkpoint.get("model_type") == "spatial_latent_dynamics"
+    if spatial:
+        dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
+            dynamics_checkpoint, device
+        )
+        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
+            autoencoder_checkpoint
+        ):
+            raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
+        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+        if autoencoder.latent_channels != dynamics.latent_channels:
+            raise ValueError("autoencoder and dynamics latent channels do not match")
+    else:
+        dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
+        _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
+        autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
+            autoencoder_checkpoint, device
+        )
+        if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
+            raise ValueError("autoencoder and dynamics latent dimensions do not match")
     autoencoder.requires_grad_(False)
-    _, validation_paths = _processed_splits(processed_dir, manifest_path)
-    dataset = EncodedRolloutDataset.from_paths(
-        validation_paths,
-        autoencoder,
-        device,
-        horizon=horizons[-1],
-        encode_batch_size=encode_batch_size,
-    )
+    if manifest_path is not None:
+        paths = DatasetManifest.load(manifest_path).processed_paths(processed_dir, split)
+    else:
+        if split == "test":
+            raise ValueError("test evaluation requires an explicit manifest")
+        _, paths = _processed_splits(processed_dir, None)
+    if spatial:
+        encoded = SpatialEncodedDynamicsDataset.from_paths(
+            paths, autoencoder, device, encode_batch_size=encode_batch_size
+        )
+        dataset = EncodedRolloutDataset(
+            encoded.episodes,
+            encoded.latents,
+            horizon=horizons[-1],
+            maximum_examples=maximum_examples,
+            seed=seed,
+        )
+    else:
+        dataset = EncodedRolloutDataset.from_paths(
+            paths,
+            autoencoder,
+            device,
+            horizon=horizons[-1],
+            encode_batch_size=encode_batch_size,
+            maximum_examples=maximum_examples,
+            seed=seed,
+        )
     metrics = evaluate_rollouts(
         dynamics,
         autoencoder,
@@ -554,6 +622,7 @@ def evaluate_saved_rollouts(
         json.dumps(
             {
                 "mode": "recursive latent rollout evaluation",
+                "split": split,
                 "examples": len(dataset),
                 "horizons": [_metrics_payload(item) for item in metrics],
                 "dynamics_checkpoint": str(dynamics_checkpoint),

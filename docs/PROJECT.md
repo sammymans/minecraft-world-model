@@ -297,8 +297,8 @@ Status: complete. Dataset `vpt_v4` contains 707 public episodes from 705
 independent groups, processed into 10 Hz, $64\times64$ canonical episodes. The
 group-safe 80/10/10 assignment provides 398,354 training, 52,331 validation,
 and 49,906 test eight-step sequences. Validation and test contain 70 independent
-groups each; the original narrow held-out session remains untouched inside
-test.
+groups each; the original narrow held-out session remains in validation because
+earlier experiments already used it for model development.
 
 ### Milestone 3 — visual autoencoder
 
@@ -334,12 +334,10 @@ Deliverables:
 Completion test: predictions on held-out sequences change with the supplied
 action, and shuffling actions makes prediction worse.
 
-Status: V1 complete; spatial retraining pending. A historical 30,000-transition
-spatial pilot beat decoded copy and became 37.6% worse when actions were
-shuffled, but its checkpoint was overwritten during an architecture experiment.
-Checkpoints are now architecture-versioned, and the selected additive baseline
-must be retrained using the broad V4 validation split before this milestone is
-complete.
+Status: complete with the selected spatial model. The versioned additive model
+trained on 100,000 V4 transitions. On the final 70-group test split, latent MSE
+is $0.003874$ versus $0.007246$ for copy, while pixel L1 is $0.03069$ versus
+$0.03749$ for decoded copy. Shuffled actions raise latent MSE to $0.005700$.
 
 ### Milestone 5 — open-loop evaluation
 
@@ -353,11 +351,11 @@ Deliverables:
 Completion test: the model beats the copy-frame baseline for at least a short
 horizon and produces visually interpretable rollouts.
 
-Status: V1 complete; spatial replacement pending. Across 288 held-out 20-step
-windows, V1 recursive predictions beat frozen decoded copy at every measured
-horizon. Correct actions beat mismatched actions throughout, while pixel MSE
-grows gradually from $0.0093$ at one step to $0.0440$ at 20 steps. Visual
-predictions remain recognizable but blur and under-follow large changes.
+Status: complete with the spatial replacement. Across 5,000 final-test windows,
+recursive predictions beat frozen decoded copy at every measured horizon. At
+20 steps, pixel MSE is $0.02364$ versus $0.02985$ for copy; mismatched actions
+are 22.9% worse. Visual predictions remain interpretable briefly but smooth as
+recursive error accumulates.
 
 ### Milestone 6 — interactive rollout
 
@@ -371,13 +369,11 @@ Deliverables:
 Completion test: changing the controls produces visibly different imagined
 futures without reading new frames from Minecraft.
 
-Status: frontend implemented; V1 model rejected as the final model. The local
-web frontend accepts held movement keys and pointer-lock camera controls, shows
-only the current imagined view, runs the dynamics model recursively at 10 Hz,
-and includes a reproducible scripted mode. The V1 checkpoint HTTP path has been
-verified end to end, but interactive use revealed unacceptable blur and
-conservative motion. It will be reconnected after the spatial dynamics model
-passes offline evaluation.
+Status: complete with the spatial checkpoint. The local web frontend accepts
+held movement keys and pointer-lock camera controls, shows only the current
+imagined view, and runs the spatial dynamics model recursively at 10 Hz. Its
+HTTP step path and scripted mode are both verified. Longer interaction still
+exposes the deterministic model's gradual blur.
 
 ### Milestone 7 — recorder replacement
 

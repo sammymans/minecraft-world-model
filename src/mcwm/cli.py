@@ -379,48 +379,49 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_rollout_parser = commands.add_parser(
         "evaluate-rollout", help="measure recursive latent prediction over several horizons"
     )
-    _add_dynamics_data_arguments(evaluate_rollout_parser)
+    _add_spatial_dynamics_data_arguments(evaluate_rollout_parser)
     evaluate_rollout_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/dynamics-v2-new-ae/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
     )
     evaluate_rollout_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/rollout-v2")
+        "--output-dir", type=Path, default=Path("artifacts/spatial-rollout-v4")
     )
     evaluate_rollout_parser.add_argument(
         "--horizons", type=int, nargs="+", default=(1, 2, 5, 10, 20)
     )
     evaluate_rollout_parser.add_argument("--count", type=int, default=3)
-    evaluate_rollout_parser.set_defaults(
-        processed_dir=Path("data/processed/vpt_v2"),
-        manifest=Path("data/manifests/vpt_v2.jsonl"),
-        autoencoder_checkpoint=Path("artifacts/autoencoder-v2/best.pt"),
+    evaluate_rollout_parser.add_argument(
+        "--maximum-examples", type=int, default=5_000
+    )
+    evaluate_rollout_parser.add_argument(
+        "--split", choices=("validation", "test"), default="validation"
     )
 
     play_rollout_parser = commands.add_parser(
         "play-rollout", help="control a recursively imagined Minecraft latent state"
     )
     play_rollout_parser.add_argument(
-        "--processed-dir", type=Path, default=Path("data/processed/vpt_v2")
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
     )
     play_rollout_parser.add_argument(
-        "--manifest", type=Path, default=Path("data/manifests/vpt_v2.jsonl")
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
     )
     play_rollout_parser.add_argument(
         "--autoencoder-checkpoint",
         type=Path,
-        default=Path("artifacts/autoencoder-v2/best.pt"),
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
     )
     play_rollout_parser.add_argument(
         "--dynamics-checkpoint",
         type=Path,
-        default=Path("artifacts/dynamics-v2-new-ae/best.pt"),
+        default=Path("artifacts/spatial-dynamics-v4/best.pt"),
     )
     play_rollout_parser.add_argument(
         "--sample-index",
         type=int,
-        default=0,
+        default=20_000,
         help="clean held-out transition used for the two real seed frames",
     )
     play_rollout_parser.add_argument(
@@ -868,6 +869,8 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             encode_batch_size=args.encode_batch_size,
             count=args.count,
+            maximum_examples=args.maximum_examples,
+            split=args.split,
             seed=args.seed,
             requested_device=args.device,
         )

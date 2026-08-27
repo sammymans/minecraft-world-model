@@ -121,6 +121,20 @@ The most important controlled comparison is the first two rows because only the
 dynamics training data changed. More data turns a nearly action-insensitive
 model into one whose error rises substantially when the controls are wrong.
 
+### Selected spatial V4 dynamics
+
+The versioned spatial model trained on 100,000 V4 transitions and was selected
+using the 70-group validation split. Its one-time 70-group test result is:
+
+| learned latent MSE | copy latent MSE | learned pixel L1 | decoded-copy pixel L1 | shuffled latent MSE |
+|---:|---:|---:|---:|---:|
+| **0.003874** | 0.007246 | **0.030689** | 0.037488 | 0.005700 |
+
+On 5,000 final-test rollout windows it beats copy from 1 through 20 recursive
+steps. Pixel MSE grows from $0.003608$ at one step to $0.023640$ at 20 steps;
+the 20-step copy baseline is $0.029847$, and mismatched actions are 22.9% worse
+than the correct-action rollout.
+
 The new encoder has a better decoder-oracle MSE, $0.001417$ instead of
 $0.002027$, and its dynamics prediction has lower pixel L1. Its one-step pixel
 MSE is within 0.5% of the old-encoder dynamics model. We select the new pair for
@@ -138,37 +152,21 @@ controlled data-only result:
   artifacts/autoencoder/best.pt
   artifacts/dynamics-v2-old-ae/best.pt
 
-selected recursive-rollout foundation:
+historical flat recursive-rollout foundation:
   artifacts/autoencoder-v2/best.pt
   artifacts/dynamics-v2-new-ae/best.pt
+
+selected spatial V4 world model:
+  artifacts/spatial-autoencoder-v3/best.pt
+  artifacts/spatial-dynamics-v4/best.pt
 ```
 
 Each dynamics checkpoint stores the SHA-256 fingerprint of its autoencoder.
 Evaluation refuses a mismatched pair.
 
-## What to record for the next scale
+## Recorded evidence
 
-When expanding beyond 25 GiB, create a superset of the existing manifest:
-
-```bash
-uv run mcwm dataset-expand-manifest \
-  --base-manifest data/manifests/vpt_v2.jsonl \
-  --output data/manifests/vpt_v3.jsonl \
-  --target-gib 50 \
-  --seed 7
-
-caffeinate -i uv run mcwm dataset-download \
-  --manifest data/manifests/vpt_v3.jsonl \
-  --workers 3
-```
-
-The target is 50 GiB in total, so this adds approximately 25 GiB to the existing
-V2 download. Existing complete files are detected and skipped.
-
-The V3 dataset is now downloaded and verified. The flat-latent scaling plan was
-superseded after decoder-oracle and interactive tests identified the
-representation itself as a bottleneck. The active experiment trains the spatial
-autoencoder on V3, followed by its paired spatial dynamics model. Record:
+Each scale records:
 
 - manifest SHA-256;
 - raw size, training hours, frames, and clean examples;
@@ -188,12 +186,12 @@ $$
 
 That improvement survived recursive evaluation, but interactive use exposed
 visual blur and weak control more clearly than aggregate error did. The spatial
-autoencoder pilot improves held-out reconstruction substantially; spatial
-dynamics has not yet been trained, so we do not yet claim the redesigned world
-model works. The evaluation protocol remains the one in
+replacement now passes one-step, action-ablation, recursive, and browser tests
+on broad V4 splits. It is a working small world model, though recursive outputs
+still smooth over time. The evaluation protocol remains the one in
 `LEARNING_06_MULTI_STEP_EVALUATION.md`.
 
-## Multi-step baseline for future data scales
+## Historical flat-latent multi-step baseline
 
 The selected `vpt_v2` pair was recursively evaluated on 288 held-out starts
 that each have a clean 20-step future:
@@ -206,8 +204,8 @@ that each have a clean 20-step future:
 | 10 | 0.033395 | 25.7% | 30.7% |
 | 20 | 0.044008 | 21.6% | 10.0% |
 
-These values are the baseline for `vpt_v3`. Future rollout comparisons must
-retain the same frozen validation group, maximum horizon, and 288-window index.
+These values were the baseline before the spatial redesign. They are retained
+as project history but are not directly comparable to the broad V4 split.
 The horizon-1 value is not directly comparable to the earlier one-step result:
 this table deliberately uses only starting points that also possess a clean
 20-step future, keeping the sample set identical across every horizon.
