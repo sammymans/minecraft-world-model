@@ -357,6 +357,131 @@ def save_scripted_rollout(
         raise ValueError(f"could not write scripted rollout: {output_path}")
 
 
+def save_action_comparison(
+    rows: list[tuple[str, list[np.ndarray]]],
+    output_path: Path,
+    *,
+    tile: int = 192,
+) -> None:
+    """Render one seed imagined forward under several action scripts, one per row.
+
+    Every row starts from the same real frame, so differences down a column are
+    caused only by the actions. Frames are enlarged with nearest-neighbour
+    sampling: smooth upscaling blurs an already-soft prediction a second time.
+    """
+    if not rows:
+        raise ValueError("action comparison needs at least one script")
+    if tile < 64:
+        raise ValueError("tile must be at least the 64-pixel frame size")
+    columns = max(len(frames) for _, frames in rows)
+    label_width = 250
+    header = 34
+    gap = 6
+    canvas = np.full(
+        (header + len(rows) * (tile + gap), label_width + columns * (tile + gap), 3),
+        20,
+        dtype=np.uint8,
+    )
+
+    for column in range(columns):
+        cv2.putText(
+            canvas,
+            "real seed t" if column == 0 else f"t+{column}",
+            (label_width + column * (tile + gap) + 4, header - 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (205, 205, 205),
+            1,
+            cv2.LINE_AA,
+        )
+
+    for row_index, (label, frames) in enumerate(rows):
+        y = header + row_index * (tile + gap)
+        cv2.putText(
+            canvas,
+            label,
+            (12, y + tile // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (235, 235, 235),
+            1,
+            cv2.LINE_AA,
+        )
+        for column, frame in enumerate(frames):
+            x = label_width + column * (tile + gap)
+            enlarged = cv2.resize(frame, (tile, tile), interpolation=cv2.INTER_NEAREST)
+            canvas[y : y + tile, x : x + tile] = cv2.cvtColor(enlarged, cv2.COLOR_RGB2BGR)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), canvas):
+        raise ValueError(f"could not write action comparison: {output_path}")
+
+
+@torch.no_grad()
+def run_action_comparison(
+    engine: InteractiveRolloutEngine,
+    seed: RolloutSeed,
+    scripts: list[str],
+    output_path: Path,
+    *,
+    camera_step: float = 30.0,
+    tile: int = 192,
+) -> PlaygroundResult:
+    """Imagine the same seed forward once per script, resetting between runs."""
+    if not scripts:
+        raise ValueError("action comparison needs at least one script")
+    rows: list[tuple[str, list[np.ndarray]]] = []
+    longest = 0
+    for script in scripts:
+        actions = parse_action_script(script, camera_step=camera_step)
+        engine.reset()
+        frames = [seed.current_frame]
+        frames.extend(engine.step(action) for action in actions)
+        rows.append((script, frames))
+        longest = max(longest, len(actions))
+    save_action_comparison(rows, output_path, tile=tile)
+    return PlaygroundResult(
+        episode=seed.episode,
+        current_step=seed.current_step,
+        steps=longest,
+        device=str(engine.device),
+        output=output_path,
+    )
+
+
+def compare_action_scripts(
+    processed_dir: Path,
+    manifest_path: Path | None,
+    autoencoder_checkpoint: Path,
+    dynamics_checkpoint: Path,
+    scripts: list[str],
+    *,
+    sample_index: int = 0,
+    camera_step: float = 30.0,
+    tile: int = 192,
+    output_path: Path = Path("artifacts/interactive-rollout/action-comparison.png"),
+    requested_device: str = "auto",
+) -> tuple[PlaygroundResult, int]:
+    """Load the selected checkpoints and compare scripts from one shared seed."""
+    engine, seed, seeds, _ = _load_playground(
+        processed_dir,
+        manifest_path,
+        autoencoder_checkpoint,
+        dynamics_checkpoint,
+        sample_index,
+        requested_device,
+    )
+    result = run_action_comparison(
+        engine,
+        seed,
+        scripts,
+        output_path,
+        camera_step=camera_step,
+        tile=tile,
+    )
+    return result, len(seeds)
+
+
 def run_scripted_rollout(
     engine: InteractiveRolloutEngine,
     seed: RolloutSeed,

@@ -176,6 +176,41 @@ the next redesign is a discrete or probabilistic latent objective, as
 [MineWorld](https://arxiv.org/abs/2504.08388) and
 [Oasis](https://oasis-model.github.io/) both do.
 
+## Getting the most out of the model we have
+
+While measuring V1 we found that recursive coherence is governed by **how much
+new content enters the frame per step**, not by how many steps have elapsed.
+Three consequences, all measured on the selected checkpoint:
+
+- **Camera speed dominates.** At a camera delta of 10 the rollout still shows
+  the shoreline and structures at t+6. At 30 the same seed and script is
+  indistinct by t+3. The browser previously sent raw pointer deltas, which at
+  10 Hz reach 50-300 per step and are clamped at 500, so ordinary mouse
+  movement was driving the model far outside the range where it stays coherent.
+- **Standing still stays sharp.** An `idle` rollout holds crisp block edges for
+  the whole horizon, because the prediction is close to the identity and there
+  is nothing uncertain to average over. Blur is a function of motion.
+- **Scene matters.** High-contrast outdoor scenes with large flat regions
+  (water, grass, sky) survive noticeably longer than dark caves or fine detail,
+  where low contrast makes any error read as mush.
+
+The frontend now scales and caps pointer deltas the way an in-game sensitivity
+slider would, and renders the 64x64 frame with nearest-neighbour upscaling
+instead of the browser's default smoothing, which was blurring an already-soft
+prediction a second time.
+
+`compare-actions` renders one seed forward under several scripts, one per row,
+which is the clearest single view of action conditioning:
+
+```bash
+uv run mcwm compare-actions --sample-index 20000 --camera-step 10 \
+  --scripts 'look_left*6' 'look_right*6' 'w+sprint*6' 'idle*6'
+```
+
+None of this changes the model. It changes how the model is driven and shown,
+and it is the difference between a rollout that reads as Minecraft and one that
+reads as fog.
+
 ## Running it
 
 The recursive objective is the same `train-spatial-dynamics` command with

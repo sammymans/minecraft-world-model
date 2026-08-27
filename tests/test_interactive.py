@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -12,6 +13,8 @@ from mcwm.interactive import (
     make_action,
     make_live_action,
     parse_action_script,
+    run_action_comparison,
+    save_action_comparison,
 )
 from mcwm.model import SpatialLatentDynamics
 
@@ -136,3 +139,47 @@ def test_interactive_engine_reseeds_without_reloading_models() -> None:
     assert engine.steps == 0
     assert np.array_equal(result, frame)
     assert engine.current_latent.item() == pytest.approx(128 / 255)
+
+
+def test_action_comparison_restarts_every_script_from_the_same_seed(tmp_path) -> None:
+    engine = InteractiveRolloutEngine(
+        _GrayDecoder(),
+        _MouseDynamics(),
+        torch.tensor([[0.0]]),
+        torch.tensor([[0.25]]),
+        np.full((2, 2, 3), 64, dtype=np.uint8),
+        torch.device("cpu"),
+    )
+    seed = RolloutSeed(
+        "episode", 7, 10.0, np.zeros((2, 2, 3), np.uint8), np.full((2, 2, 3), 64, np.uint8)
+    )
+    output = tmp_path / "comparison.png"
+
+    result = run_action_comparison(
+        engine,
+        seed,
+        ["look_right*2", "look_left*3"],
+        output,
+        camera_step=4.0,
+        tile=64,
+    )
+
+    # The second script must not inherit the first one's drift; both start from
+    # the shared seed latent of 0.25.
+    assert engine.steps == 3
+    assert result.steps == 3
+    assert result.episode == "episode"
+    assert output.exists()
+    written = cv2.imread(str(output))
+    # Two rows, and the widest row is the seed frame plus three imagined steps.
+    assert written.shape[0] == 34 + 2 * (64 + 6)
+    assert written.shape[1] == 250 + 4 * (64 + 6)
+
+
+def test_action_comparison_rejects_empty_and_undersized_requests(tmp_path) -> None:
+    with pytest.raises(ValueError, match="at least one script"):
+        save_action_comparison([], tmp_path / "empty.png")
+    with pytest.raises(ValueError, match="tile must be at least"):
+        save_action_comparison(
+            [("idle", [np.zeros((2, 2, 3), np.uint8)])], tmp_path / "small.png", tile=16
+        )
