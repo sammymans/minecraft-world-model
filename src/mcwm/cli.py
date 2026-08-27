@@ -26,6 +26,7 @@ from mcwm.preview import create_preview, inspect_episode
 from mcwm.rollout import evaluate_saved_rollouts
 from mcwm.spatial_dynamics import (
     evaluate_saved_spatial_dynamics,
+    evaluate_spatial_rollouts,
     train_spatial_dynamics,
 )
 from mcwm.spatial_training import (
@@ -345,6 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="penalize blur via decoded image gradients; the latent term is O(0.4) "
         "and this one O(0.005), so useful values are tens, not fractions",
     )
+    train_spatial_dynamics_parser.add_argument(
+        "--rollout-steps",
+        type=int,
+        default=1,
+        help="unroll this many steps during training, feeding each prediction back "
+        "in, so compounding blur is penalized rather than discovered later",
+    )
     train_spatial_dynamics_parser.add_argument("--patience", type=int, default=5)
 
     evaluate_spatial_dynamics_parser = commands.add_parser(
@@ -361,6 +369,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v3-eval")
     )
     evaluate_spatial_dynamics_parser.add_argument("--count", type=int, default=6)
+
+    spatial_rollout_parser = commands.add_parser(
+        "evaluate-spatial-rollout",
+        help="measure recursive spatial prediction and how much sharpness survives",
+    )
+    _add_spatial_dynamics_data_arguments(spatial_rollout_parser)
+    spatial_rollout_parser.add_argument(
+        "--dynamics-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-dynamics-v3/best.pt"),
+    )
+    spatial_rollout_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-rollout-v3")
+    )
+    spatial_rollout_parser.add_argument(
+        "--horizons", type=int, nargs="+", default=(1, 2, 5, 10, 20)
+    )
+    spatial_rollout_parser.add_argument("--starts", type=int, default=120)
 
     evaluate_rollout_parser = commands.add_parser(
         "evaluate-rollout", help="measure recursive latent prediction over several horizons"
@@ -770,6 +796,7 @@ def main(argv: list[str] | None = None) -> int:
             latent_weight=args.latent_weight,
             pixel_weight=args.pixel_weight,
             edge_weight=args.edge_weight,
+            rollout_steps=args.rollout_steps,
             patience=args.patience,
             seed=args.seed,
             requested_device=args.device,
@@ -821,6 +848,34 @@ def main(argv: list[str] | None = None) -> int:
             f"{metrics.shuffled_action_degradation:+.6f}"
         )
         print(f"visual:                      {result.comparison_grid}")
+        return 0
+
+    if args.command == "evaluate-spatial-rollout":
+        results = evaluate_spatial_rollouts(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.dynamics_checkpoint,
+            args.output_dir,
+            horizons=tuple(args.horizons),
+            starts=args.starts,
+            encode_batch_size=args.encode_batch_size,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        header = (
+            f"{'horizon':>8} {'latent MSE':>12} {'frozen':>12} {'pixel L1':>10} "
+            f"{'frozen':>10} {'sharpness':>10}"
+        )
+        print(header)
+        for item in results:
+            print(
+                f"{item.horizon:>8} {item.latent_mse:>12.6f} {item.frozen_latent_mse:>12.6f} "
+                f"{item.pixel_l1:>10.6f} {item.frozen_pixel_l1:>10.6f} "
+                f"{100 * item.sharpness_ratio:>9.1f}%"
+            )
+        if not all(item.beats_frozen for item in results):
+            print("warning: the rollout loses to a frozen frame at some horizon")
         return 0
 
     if args.command == "evaluate-rollout":
