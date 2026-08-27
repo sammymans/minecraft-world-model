@@ -26,6 +26,10 @@ from mcwm.manifest import (
 )
 from mcwm.preview import create_preview, inspect_episode
 from mcwm.rollout import evaluate_saved_rollouts
+from mcwm.spatial_diffusion import (
+    evaluate_saved_spatial_diffusion,
+    train_spatial_diffusion,
+)
 from mcwm.spatial_dynamics import (
     evaluate_saved_spatial_dynamics,
     train_spatial_dynamics,
@@ -480,6 +484,41 @@ def build_parser() -> argparse.ArgumentParser:
     play_rollout_parser.add_argument("--port", type=int, default=8765)
     play_rollout_parser.add_argument(
         "--no-open", action="store_true", help="do not open the frontend in a browser"
+    )
+
+    train_diffusion_parser = commands.add_parser(
+        "train-spatial-diffusion",
+        help="train conditional latent diffusion so the dynamics samples instead of averages",
+    )
+    _add_spatial_dynamics_data_arguments(train_diffusion_parser)
+    train_diffusion_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-diffusion-v4")
+    )
+    train_diffusion_parser.add_argument("--epochs", type=int, default=20)
+    train_diffusion_parser.add_argument("--maximum-transitions", type=int, default=100_000)
+    train_diffusion_parser.add_argument("--hidden-channels", type=int, default=64)
+    train_diffusion_parser.add_argument("--blocks", type=int, default=3)
+    train_diffusion_parser.add_argument("--diffusion-steps", type=int, default=1_000)
+    train_diffusion_parser.add_argument("--sampling-steps", type=int, default=20)
+    train_diffusion_parser.add_argument("--learning-rate", type=float, default=2e-4)
+    train_diffusion_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    train_diffusion_parser.add_argument("--patience", type=int, default=5)
+    train_diffusion_parser.add_argument("--evaluation-examples", type=int, default=2_000)
+
+    evaluate_diffusion_parser = commands.add_parser(
+        "evaluate-spatial-diffusion",
+        help="score a saved diffusion checkpoint's sampled steps",
+    )
+    _add_spatial_dynamics_data_arguments(evaluate_diffusion_parser)
+    evaluate_diffusion_parser.add_argument(
+        "--diffusion-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-diffusion-v4/best.pt"),
+    )
+    evaluate_diffusion_parser.add_argument("--sampling-steps", type=int, default=20)
+    evaluate_diffusion_parser.add_argument("--maximum-examples", type=int, default=2_000)
+    evaluate_diffusion_parser.add_argument(
+        "--split", choices=("validation", "test"), default="validation"
     )
 
     compare_actions_parser = commands.add_parser(
@@ -998,6 +1037,66 @@ def main(argv: list[str] | None = None) -> int:
         print(f"imagined steps: {result.steps}")
         if result.output is not None:
             print(f"visual:         {result.output}")
+        return 0
+
+    if args.command == "train-spatial-diffusion":
+        result = train_spatial_diffusion(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            maximum_transitions=args.maximum_transitions,
+            hidden_channels=args.hidden_channels,
+            blocks=args.blocks,
+            diffusion_steps=args.diffusion_steps,
+            sampling_steps=args.sampling_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            patience=args.patience,
+            evaluation_examples=args.evaluation_examples,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        validation = result.validation_metrics
+        print(f"device:                {result.device}")
+        print(f"latent shape:          {result.latent_shape}")
+        print(f"diffusion parameters:  {result.parameter_count:,}")
+        print(f"training transitions:  {result.training_transitions:,}")
+        print(f"denoising MSE:         {validation.denoising_mse:.6f}")
+        print(f"sampled latent MSE:    {validation.sample_latent_mse:.6f}")
+        print(f"copy baseline latent:  {validation.copy_latent_mse:.6f}")
+        print(f"sampled pixel MSE:     {validation.sample_pixel_mse:.6f}")
+        print(f"sampled edge ratio:    {validation.sample_edge_ratio:.3f}")
+        print(f"decoder oracle edge:   {validation.oracle_edge_ratio:.3f}")
+        print(f"checkpoint:            {result.checkpoint}")
+        print(f"curve:                 {result.training_curve}")
+        return 0
+
+    if args.command == "evaluate-spatial-diffusion":
+        metrics = evaluate_saved_spatial_diffusion(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.diffusion_checkpoint,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            sampling_steps=args.sampling_steps,
+            maximum_examples=args.maximum_examples,
+            split=args.split,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        print(f"examples:             {metrics.examples:,}")
+        print(f"denoising MSE:        {metrics.denoising_mse:.6f}")
+        print(f"sampled latent MSE:   {metrics.sample_latent_mse:.6f}")
+        print(f"copy baseline latent: {metrics.copy_latent_mse:.6f}")
+        print(f"sampled pixel MSE:    {metrics.sample_pixel_mse:.6f}")
+        print(f"sampled pixel PSNR:   {metrics.sample_pixel_psnr_db:.2f} dB")
+        print(f"sampled edge ratio:   {metrics.sample_edge_ratio:.3f}")
+        print(f"decoder oracle edge:  {metrics.oracle_edge_ratio:.3f}")
         return 0
 
     if args.command == "compare-actions":

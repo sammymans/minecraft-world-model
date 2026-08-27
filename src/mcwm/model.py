@@ -504,12 +504,19 @@ class SpatialLatentDiffusion(nn.Module):
         schedule = torch.linspace(
             self.diffusion_steps - 1, 0, steps, device=current_latent.device
         ).round().long()
-        residual = torch.randn(
-            current_latent.shape,
-            device=current_latent.device,
-            dtype=current_latent.dtype,
-            generator=generator,
-        )
+        if generator is not None and generator.device != current_latent.device:
+            # A seeded CPU generator is the portable way to make sampling
+            # reproducible, including on MPS where device generators differ.
+            residual = torch.randn(
+                current_latent.shape, dtype=current_latent.dtype, generator=generator
+            ).to(current_latent.device)
+        else:
+            residual = torch.randn(
+                current_latent.shape,
+                device=current_latent.device,
+                dtype=current_latent.dtype,
+                generator=generator,
+            )
         for position, timestep in enumerate(schedule):
             batch_timesteps = timestep.repeat(len(current_latent))
             alpha_bar = self.alpha_bars[timestep]
