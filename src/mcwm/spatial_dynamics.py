@@ -68,11 +68,8 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         latents: list[torch.Tensor],
         *,
         maximum_transitions: int | None = None,
-        horizon: int = 1,
         seed: int = 7,
     ):
-        if horizon < 1:
-            raise ValueError("horizon must be positive")
         if not episodes or len(episodes) != len(latents):
             raise ValueError("each spatial dynamics episode needs one latent timeline")
         latent_shapes: set[tuple[int, int, int]] = set()
@@ -85,8 +82,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         self.episodes = episodes
         self.latents = latents
         self.latent_shape = latent_shapes.pop()
-        self.horizon = horizon
-        self.index = SequenceDataset(episodes, horizon=horizon).index
+        self.index = SequenceDataset(episodes, horizon=1).index
         if maximum_transitions is not None and len(self.index) > maximum_transitions:
             generator = torch.Generator().manual_seed(seed)
             selected = torch.randperm(len(self.index), generator=generator)[:maximum_transitions]
@@ -101,7 +97,6 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         device: torch.device,
         *,
         maximum_transitions: int | None = None,
-        horizon: int = 1,
         encode_batch_size: int = 128,
         seed: int = 7,
     ) -> SpatialEncodedDynamicsDataset:
@@ -119,7 +114,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         available_transitions = 0
         for path in ordered_paths:
             episode = ProcessedEpisode.load(path)
-            valid_transitions = len(SequenceDataset([episode], horizon=horizon))
+            valid_transitions = len(SequenceDataset([episode], horizon=1))
             if valid_transitions == 0:
                 continue
             chunks: list[torch.Tensor] = []
@@ -140,7 +135,6 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
             episodes,
             timelines,
             maximum_transitions=maximum_transitions,
-            horizon=horizon,
             seed=seed,
         )
 
@@ -151,7 +145,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         episode_index, current_index = self.index[item]
         episode = self.episodes[episode_index]
         timeline = self.latents[episode_index]
-        sample = {
+        return {
             "previous_latent": timeline[current_index - 1].float(),
             "current_latent": timeline[current_index].float(),
             "target_latent": timeline[current_index + 1].float(),
@@ -159,14 +153,6 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
             "current_frame": _frame_tensor(episode.frames[current_index]),
             "target_frame": _frame_tensor(episode.frames[current_index + 1]),
         }
-        if self.horizon > 1:
-            stop = current_index + self.horizon
-            # [horizon + 2] latents seed the rollout and supply one target per step.
-            sample["latent_sequence"] = timeline[current_index - 1 : stop + 1].float()
-            sample["action_sequence"] = torch.from_numpy(
-                episode.actions[current_index:stop]
-            ).float()
-        return sample
 
     @property
     def encoded_frames(self) -> int:
@@ -220,40 +206,6 @@ def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[st
     return {name: value.to(device) for name, value in batch.items()}
 
 
-def _step_losses(
-    predicted: torch.Tensor,
-    target_latent: torch.Tensor,
-    autoencoder: SpatialAutoencoder,
-    latent_std: torch.Tensor,
-    *,
-    pixel_weight: float,
-    edge_weight: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Score one predicted latent against the decoder oracle, not the raw frame.
-
-    Comparing against `decode(target_latent)` keeps the dynamics model from being
-    charged for reconstruction error it cannot fix.
-    """
-    latent_loss = ((predicted - target_latent) / latent_std).square().mean()
-    if not (pixel_weight or edge_weight):
-        zero = latent_loss.new_zeros(())
-        return latent_loss, zero, zero
-    predicted_frame = autoencoder.decode(predicted)
-    with torch.no_grad():
-        oracle_frame = autoencoder.decode(target_latent)
-    pixel_loss = nn.functional.mse_loss(predicted_frame, oracle_frame)
-    if edge_weight:
-        predicted_dx, predicted_dy = image_gradients(predicted_frame)
-        oracle_dx, oracle_dy = image_gradients(oracle_frame)
-        edge_loss = 0.5 * (
-            nn.functional.l1_loss(predicted_dx, oracle_dx)
-            + nn.functional.l1_loss(predicted_dy, oracle_dy)
-        )
-    else:
-        edge_loss = latent_loss.new_zeros(())
-    return latent_loss, pixel_loss, edge_loss
-
-
 def _prediction_loss(
     dynamics: SpatialLatentDynamics,
     autoencoder: SpatialAutoencoder,
@@ -262,64 +214,41 @@ def _prediction_loss(
     latent_weight: float,
     pixel_weight: float,
     edge_weight: float = 0.0,
-    rollout_steps: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """One-step objective, or an unrolled one when `rollout_steps` exceeds one.
+    """Score one prediction against the decoder oracle, not the raw frame.
+
+    Comparing against `decode(target_latent)` keeps the dynamics model from
+    being charged for reconstruction error it cannot fix.
 
     `edge_weight` penalizes the difference in image gradients, the same term the
     spatial autoencoder uses. Squared error alone is minimized by the blurry
-    average of every plausible next frame, and two structurally different
-    dynamics models both land at 59% of the real frame's edge energy, so
-    sharpness is set by this objective rather than by the architecture. Note the
-    scale: the normalized latent term is O(0.4) while the gradient term is
-    O(0.005), so a useful `edge_weight` is tens, not fractions.
-
-    `rollout_steps` feeds each prediction back in as the next input, so blur that
-    compounds across steps is charged to the model during training rather than
-    discovered later during rollout.
+    average of every plausible next frame, which is measurably what happens:
+    the pilot's decoded prediction carries 59% of the edge energy of the real
+    frame. Note that the normalized latent term is O(0.4) while the gradient
+    term is O(0.005), so a useful `edge_weight` is tens, not fractions.
     """
-    if rollout_steps < 1:
-        raise ValueError("rollout_steps must be positive")
-    if rollout_steps == 1:
-        predicted = dynamics(
-            batch["previous_latent"], batch["current_latent"], batch["action"]
-        )
-        latent_loss, pixel_loss, edge_loss = _step_losses(
-            predicted,
-            batch["target_latent"],
-            autoencoder,
-            dynamics.latent_std,
-            pixel_weight=pixel_weight,
-            edge_weight=edge_weight,
-        )
-    else:
-        if "latent_sequence" not in batch:
-            raise ValueError("multi-step training needs a dataset built with a horizon")
-        latents = batch["latent_sequence"]
-        actions = batch["action_sequence"]
-        if latents.shape[1] < rollout_steps + 2:
-            raise ValueError("the latent sequence is shorter than the requested rollout")
-        previous, current = latents[:, 0], latents[:, 1]
-        latent_terms: list[torch.Tensor] = []
-        pixel_terms: list[torch.Tensor] = []
-        edge_terms: list[torch.Tensor] = []
-        for step in range(rollout_steps):
-            predicted = dynamics(previous, current, actions[:, step])
-            step_latent, step_pixel, step_edge = _step_losses(
-                predicted,
-                latents[:, step + 2],
-                autoencoder,
-                dynamics.latent_std,
-                pixel_weight=pixel_weight,
-                edge_weight=edge_weight,
+    predicted = dynamics(
+        batch["previous_latent"], batch["current_latent"], batch["action"]
+    )
+    normalized_error = (predicted - batch["target_latent"]) / dynamics.latent_std
+    latent_loss = normalized_error.square().mean()
+    if pixel_weight or edge_weight:
+        predicted_frame = autoencoder.decode(predicted)
+        with torch.no_grad():
+            oracle_frame = autoencoder.decode(batch["target_latent"])
+        pixel_loss = nn.functional.mse_loss(predicted_frame, oracle_frame)
+        if edge_weight:
+            predicted_dx, predicted_dy = image_gradients(predicted_frame)
+            oracle_dx, oracle_dy = image_gradients(oracle_frame)
+            edge_loss = 0.5 * (
+                nn.functional.l1_loss(predicted_dx, oracle_dx)
+                + nn.functional.l1_loss(predicted_dy, oracle_dy)
             )
-            latent_terms.append(step_latent)
-            pixel_terms.append(step_pixel)
-            edge_terms.append(step_edge)
-            previous, current = current, predicted
-        latent_loss = torch.stack(latent_terms).mean()
-        pixel_loss = torch.stack(pixel_terms).mean()
-        edge_loss = torch.stack(edge_terms).mean()
+        else:
+            edge_loss = latent_loss.new_zeros(())
+    else:
+        pixel_loss = latent_loss.new_zeros(())
+        edge_loss = latent_loss.new_zeros(())
     total = latent_weight * latent_loss + pixel_weight * pixel_loss + edge_weight * edge_loss
     return total, latent_loss, pixel_loss
 
@@ -335,7 +264,6 @@ def _validation_objective(
     latent_weight: float,
     pixel_weight: float,
     edge_weight: float,
-    rollout_steps: int = 1,
 ) -> tuple[float, float, float]:
     dynamics.eval()
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -350,7 +278,6 @@ def _validation_objective(
             latent_weight=latent_weight,
             pixel_weight=pixel_weight,
             edge_weight=edge_weight,
-            rollout_steps=rollout_steps,
         )
         count = len(batch["action"])
         totals += np.array([float(loss) for loss in losses]) * count
@@ -369,7 +296,6 @@ def _save_checkpoint(
     latent_weight: float,
     pixel_weight: float,
     edge_weight: float = 0.0,
-    rollout_steps: int = 1,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -385,7 +311,6 @@ def _save_checkpoint(
             "latent_weight": latent_weight,
             "pixel_weight": pixel_weight,
             "edge_weight": edge_weight,
-            "rollout_steps": rollout_steps,
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "autoencoder_sha256": autoencoder_sha256,
             "dataset_manifest": str(manifest_path),
@@ -453,15 +378,12 @@ def train_spatial_dynamics(
     latent_weight: float = 1.0,
     pixel_weight: float = 1.0,
     edge_weight: float = 0.0,
-    rollout_steps: int = 1,
     patience: int = 5,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> SpatialDynamicsTrainingResult:
     if min(epochs, batch_size, encode_batch_size, maximum_transitions, patience) < 1:
         raise ValueError("training sizes and patience must be positive")
-    if rollout_steps < 1:
-        raise ValueError("rollout_steps must be positive")
     if min(latent_weight, pixel_weight, edge_weight) < 0:
         raise ValueError("loss weights must be non-negative")
     if latent_weight + pixel_weight + edge_weight == 0:
@@ -478,7 +400,6 @@ def train_spatial_dynamics(
         autoencoder,
         device,
         maximum_transitions=maximum_transitions,
-        horizon=rollout_steps,
         encode_batch_size=encode_batch_size,
         seed=seed,
     )
@@ -487,7 +408,6 @@ def train_spatial_dynamics(
         validation_paths,
         autoencoder,
         device,
-        horizon=rollout_steps,
         encode_batch_size=encode_batch_size,
         seed=seed,
     )
@@ -538,7 +458,6 @@ def train_spatial_dynamics(
                 latent_weight=latent_weight,
                 pixel_weight=pixel_weight,
                 edge_weight=edge_weight,
-                rollout_steps=rollout_steps,
             )
             loss.backward()
             optimizer.step()
@@ -555,7 +474,6 @@ def train_spatial_dynamics(
             latent_weight=latent_weight,
             pixel_weight=pixel_weight,
             edge_weight=edge_weight,
-            rollout_steps=rollout_steps,
         )
         history["train"].append(train_loss)
         history["validation"].append(validation_loss)
@@ -591,7 +509,6 @@ def train_spatial_dynamics(
         latent_weight=latent_weight,
         pixel_weight=pixel_weight,
         edge_weight=edge_weight,
-        rollout_steps=rollout_steps,
     )
     metrics = evaluate_dynamics(
         dynamics, autoencoder, validation, device, batch_size=batch_size, seed=seed
@@ -605,9 +522,7 @@ def train_spatial_dynamics(
     metrics_path.write_text(
         json.dumps(
             {
-                "mode": "spatial latent dynamics",
-                "rollout_steps": rollout_steps,
-                "edge_weight": edge_weight,
+                "mode": "spatial one-step latent dynamics",
                 "training_transitions": len(training),
                 "encoded_training_frames": training.encoded_frames,
                 "validation_transitions": len(validation),
@@ -694,140 +609,3 @@ def evaluate_saved_spatial_dynamics(
         latent_shape=validation.latent_shape,
         device=str(device),
     )
-
-
-@dataclass(frozen=True)
-class SpatialRolloutHorizon:
-    horizon: int
-    latent_mse: float
-    frozen_latent_mse: float
-    pixel_l1: float
-    frozen_pixel_l1: float
-    sharpness: float
-    real_sharpness: float
-
-    @property
-    def sharpness_ratio(self) -> float:
-        return self.sharpness / max(self.real_sharpness, 1e-12)
-
-    @property
-    def beats_frozen(self) -> bool:
-        return self.latent_mse < self.frozen_latent_mse
-
-
-def _image_sharpness(images: torch.Tensor) -> float:
-    """Mean absolute image gradient: how much edge energy survived."""
-    horizontal, vertical = image_gradients(images)
-    return float(0.5 * (horizontal.abs().mean() + vertical.abs().mean()))
-
-
-@torch.no_grad()
-def evaluate_spatial_rollouts(
-    processed_dir: Path,
-    manifest_path: Path,
-    autoencoder_checkpoint: Path,
-    dynamics_checkpoint: Path,
-    output_dir: Path,
-    *,
-    horizons: tuple[int, ...] = (1, 2, 5, 10, 20),
-    starts: int = 120,
-    encode_batch_size: int = 128,
-    seed: int = 7,
-    requested_device: str = "auto",
-) -> list[SpatialRolloutHorizon]:
-    """Recursively imagine forward with true actions and measure the decay.
-
-    One-step accuracy does not imply multi-step stability, and the interactive
-    playground is a rollout, not a single step. This reports error against a
-    frozen-frame baseline and, separately, how much edge energy survives - the
-    two decay differently, and only the second one tracks how blurry it looks.
-    """
-    if not horizons or min(horizons) < 1:
-        raise ValueError("horizons must be positive")
-    if starts < 1:
-        raise ValueError("starts must be positive")
-    device = choose_device(requested_device)
-    dynamics, metadata = load_spatial_dynamics_checkpoint(dynamics_checkpoint, device)
-    if metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
-        raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
-    autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-    autoencoder.requires_grad_(False)
-    _, validation_paths = _processed_splits(processed_dir, manifest_path)
-
-    longest = max(horizons)
-    episodes = [ProcessedEpisode.load(path) for path in validation_paths]
-    index = SequenceDataset(episodes, horizon=longest).index
-    if not index:
-        raise ValueError(f"no held-out episode supports a {longest}-step rollout")
-    generator = np.random.default_rng(seed)
-    picks = generator.choice(len(index), size=min(starts, len(index)), replace=False)
-
-    totals = {
-        horizon: dict.fromkeys(
-            ("latent", "frozen_latent", "pixel", "frozen_pixel", "sharp", "real_sharp"), 0.0
-        )
-        for horizon in horizons
-    }
-    wanted = set(horizons)
-    for pick in picks:
-        episode_index, start = index[int(pick)]
-        episode = episodes[episode_index]
-        window = episode.frames[start - 1 : start + longest + 1]
-        frames = torch.from_numpy(
-            np.ascontiguousarray(window.transpose(0, 3, 1, 2))
-        ).to(device=device, dtype=torch.float32).div_(255.0)
-        true_latents = autoencoder.encode(frames)
-        seed_latent = true_latents[1:2]
-        previous, current = true_latents[0:1], seed_latent.clone()
-        frozen_frame = autoencoder.decode(seed_latent).clamp(0, 1)
-        for step in range(1, longest + 1):
-            action = torch.from_numpy(episode.actions[start + step - 1])
-            action = action.to(device=device, dtype=torch.float32)[None]
-            previous, current = current, dynamics(previous, current, action)
-            if step not in wanted:
-                continue
-            target = true_latents[step + 1 : step + 2]
-            real_frame = frames[step + 1 : step + 2]
-            imagined = autoencoder.decode(current).clamp(0, 1)
-            bucket = totals[step]
-            bucket["latent"] += float((current - target).square().mean())
-            bucket["frozen_latent"] += float((seed_latent - target).square().mean())
-            bucket["pixel"] += float((imagined - real_frame).abs().mean())
-            bucket["frozen_pixel"] += float((frozen_frame - real_frame).abs().mean())
-            bucket["sharp"] += _image_sharpness(imagined)
-            bucket["real_sharp"] += _image_sharpness(real_frame)
-
-    count = len(picks)
-    results = [
-        SpatialRolloutHorizon(
-            horizon=horizon,
-            latent_mse=totals[horizon]["latent"] / count,
-            frozen_latent_mse=totals[horizon]["frozen_latent"] / count,
-            pixel_l1=totals[horizon]["pixel"] / count,
-            frozen_pixel_l1=totals[horizon]["frozen_pixel"] / count,
-            sharpness=totals[horizon]["sharp"] / count,
-            real_sharpness=totals[horizon]["real_sharp"] / count,
-        )
-        for horizon in sorted(horizons)
-    ]
-    metrics_path = output_dir / "rollout-metrics.json"
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(
-        json.dumps(
-            {
-                "mode": "spatial recursive rollout",
-                "starts": count,
-                "dynamics_checkpoint": str(dynamics_checkpoint),
-                "rollout_steps_trained": int(metadata.get("rollout_steps", 1)),
-                "edge_weight_trained": float(metadata.get("edge_weight", 0.0)),
-                "horizons": [
-                    asdict(item) | {"sharpness_ratio": item.sharpness_ratio}
-                    for item in results
-                ],
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return results

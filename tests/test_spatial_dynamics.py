@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from torch import nn
 
 from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics
 from mcwm.spatial_dynamics import (
@@ -149,67 +148,3 @@ def test_spatial_edge_weight_penalizes_blur(tmp_path: Path) -> None:
     # The zero-initialized model predicts the copy, whose decoded gradients differ
     # from the oracle's, so the edge term must add cost rather than vanish.
     assert with_edges.item() > plain.item()
-
-
-def test_spatial_dataset_horizon_yields_rollout_sequences(tmp_path: Path) -> None:
-    path = tmp_path / "episode.npz"
-    _write_episode(path, frames=12)
-    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
-
-    dataset = SpatialEncodedDynamicsDataset.from_paths(
-        [path], autoencoder, torch.device("cpu"), horizon=3, encode_batch_size=4
-    )
-    sample = dataset[0]
-
-    # horizon + 2 latents seed the rollout and supply one target per step.
-    assert sample["latent_sequence"].shape == (5, 4, 16, 16)
-    assert sample["action_sequence"].shape == (3, 9)
-    assert torch.equal(sample["latent_sequence"][1], sample["current_latent"])
-    assert torch.equal(sample["latent_sequence"][2], sample["target_latent"])
-    assert torch.equal(sample["action_sequence"][0], sample["action"])
-
-
-def test_spatial_rollout_loss_feeds_predictions_back() -> None:
-    """Each step must consume the previous prediction, not the real latent."""
-
-    class ConstantDrift(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.step = nn.Parameter(torch.full((1, 4, 16, 16), 0.1))
-            self.latent_std = torch.ones(1, 4, 1, 1)
-
-        def forward(self, previous, current, action):
-            return current + self.step
-
-    # Every latent in the window is zero, so drift is the only source of error.
-    batch = {
-        "latent_sequence": torch.zeros(2, 5, 4, 16, 16),
-        "action_sequence": torch.zeros(2, 3, 9),
-    }
-
-    total, latent, _ = _prediction_loss(
-        ConstantDrift(), None, batch, latent_weight=1.0, pixel_weight=0.0, rollout_steps=3
-    )
-    total.backward()
-
-    # Feeding predictions back makes the drift accumulate: 0.1, then 0.2, then 0.3.
-    assert latent.item() == pytest.approx((0.01 + 0.04 + 0.09) / 3, rel=1e-5)
-
-
-def test_spatial_rollout_loss_needs_a_horizon_dataset(tmp_path: Path) -> None:
-    path = tmp_path / "episode.npz"
-    _write_episode(path)
-    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
-    dataset = SpatialEncodedDynamicsDataset.from_paths(
-        [path], autoencoder, torch.device("cpu")
-    )
-    batch = {
-        name: torch.stack([dataset[index][name] for index in range(2)])
-        for name in dataset[0]
-    }
-    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
-
-    with pytest.raises(ValueError, match="horizon"):
-        _prediction_loss(
-            dynamics, autoencoder, batch, latent_weight=1.0, pixel_weight=0.0, rollout_steps=2
-        )
