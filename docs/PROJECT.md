@@ -437,12 +437,41 @@ The following are explicitly outside the current project:
 - robotics framing;
 - text conditioning;
 - high-resolution or photorealistic video generation;
-- transformers, diffusion models, or large pretrained models;
+- transformers and large pretrained models;
 - full Minecraft mechanics;
 - long-horizon coherence;
 - inventory and crafting;
 - multiplayer support; and
 - production-scale data infrastructure.
+
+### Revision: conditional latent diffusion is now in scope
+
+This list originally excluded diffusion models alongside transformers and
+pretrained models. That exclusion is lifted for the dynamics network only,
+deliberately and for a measured reason.
+
+Learning 09 and Learning 10 established that the rollout blur is caused by the
+training objective rather than by the encoder, the architecture, or the amount
+of data. Squared error is minimized by the average over plausible next frames,
+and that average is smooth. Learning 10 separated the two candidate causes:
+training on the model's own predictions removed exposure bias and bought a
+consistent horizon-scaling improvement, and the blur remained. That is the
+evidence that deterministic regression is the binding constraint.
+
+Modeling a distribution instead of a point estimate is the only change that
+addresses it. The scope guard this list exists to enforce is *stay tiny and
+stay attributable*, and the revision respects both:
+
+- the frozen spatial autoencoder is unchanged;
+- the dynamics keeps its convolutional backbone and gains a timestep
+  embedding, denoising the next latent instead of regressing it;
+- no transformer, no pretrained weights, no new service or framework; and
+- sampling costs about 5 ms per frame against a 100 ms budget at 10 Hz, so the
+  interactive rollout stays interactive.
+
+Transformers, pretrained models, and every other item above remain out of
+scope. Diffusion over pixels remains out of scope; this is diffusion over the
+existing 16x16x16 latent only.
 
 If a proposed feature does not directly help us record sequences, train the
 tiny latent model, or interact with its rollout, we should leave it out.
