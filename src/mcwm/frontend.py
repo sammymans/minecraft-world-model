@@ -146,7 +146,8 @@ def _action_text(action: np.ndarray) -> str:
 
 
 def _handler(controller: WebRolloutController) -> type[BaseHTTPRequestHandler]:
-    html = FRONTEND_PATH.read_bytes()
+    # Read per request rather than once at startup so editing the page and
+    # refreshing the browser is enough to see the change.
 
     class RolloutHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
@@ -194,7 +195,7 @@ def _handler(controller: WebRolloutController) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             if path == "/":
-                self._send(html, "text/html; charset=utf-8")
+                self._send(FRONTEND_PATH.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/info":
                 self._json(controller.info.__dict__)
             elif path == "/api/frame":

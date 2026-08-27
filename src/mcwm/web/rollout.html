@@ -142,10 +142,6 @@
       width: 100%;
       height: 100%;
       object-fit: cover;
-      /* The frame is 64x64. Smooth upscaling blurs an already-soft prediction a
-         second time; nearest-neighbour keeps the block edges the decoder did
-         produce, and reads as Minecraft rather than as fog. */
-      image-rendering: pixelated;
       user-select: none;
       -webkit-user-drag: none;
     }
@@ -319,7 +315,7 @@
     // Raw pointer deltas accumulated at 10 Hz run far past that, so scale and
     // cap them the way an in-game sensitivity slider would.
     const MOUSE_SENSITIVITY = 0.2;
-    const MOUSE_STEP_LIMIT = 25;
+    const MOUSE_STEP_LIMIT = 10;
     let running = false;
     let pending = false;
     let mouseDx = 0;
