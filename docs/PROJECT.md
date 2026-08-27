@@ -343,8 +343,11 @@ Deliverables:
 Completion test: the model beats the copy-frame baseline for at least a short
 horizon and produces visually interpretable rollouts.
 
-Status: next. The precise recursive protocol, baselines, expected artifacts,
-and completion gate are specified in `LEARNING_06_MULTI_STEP_EVALUATION.md`.
+Status: complete. Across 288 held-out 20-step windows, recursive predictions
+beat frozen decoded copy at every measured horizon. Correct actions beat
+mismatched actions throughout, while pixel MSE grows gradually from $0.0093$ at
+one step to $0.0440$ at 20 steps. Visual predictions remain recognizable but
+blur and under-follow large changes.
 
 ### Milestone 6 — interactive rollout
 

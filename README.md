@@ -73,5 +73,7 @@ The verified `vpt_v2` pipeline has 173 episodes, 12.81 training hours, and
 148,069 clean one-step examples. The selected 1.4-million-parameter autoencoder
 compresses each frame into 256 values and reaches 28.27 dB on the frozen
 held-out session. Its paired action-conditioned dynamics model beats decoded
-copy by 17.0%; shuffling actions worsens pixel MSE by 26.9%. The next milestone
-is multi-step recursive evaluation before the interactive rollout viewer.
+copy by 17.0%; shuffling actions worsens pixel MSE by 26.9%. Recursive
+predictions beat frozen copy through 20 held-out steps, although they become
+blurred and action influence weakens by two seconds. The next milestone is the
+first interactive rollout viewer and optional short-horizon rollout training.

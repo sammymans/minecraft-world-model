@@ -22,6 +22,7 @@ from mcwm.manifest import (
     preprocess_manifest,
 )
 from mcwm.preview import create_preview, inspect_episode
+from mcwm.rollout import evaluate_saved_rollouts
 from mcwm.training import evaluate_saved_autoencoder, sanity_overfit, train_full_autoencoder
 from mcwm.vpt import load_actions
 
@@ -223,6 +224,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", choices=("training", "validation"), default="validation"
     )
     evaluate_dynamics_parser.add_argument("--count", type=int, default=6)
+
+    evaluate_rollout_parser = commands.add_parser(
+        "evaluate-rollout", help="measure recursive latent prediction over several horizons"
+    )
+    _add_dynamics_data_arguments(evaluate_rollout_parser)
+    evaluate_rollout_parser.add_argument(
+        "--dynamics-checkpoint",
+        type=Path,
+        default=Path("artifacts/dynamics-v2-new-ae/best.pt"),
+    )
+    evaluate_rollout_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/rollout-v2")
+    )
+    evaluate_rollout_parser.add_argument(
+        "--horizons", type=int, nargs="+", default=(1, 2, 5, 10, 20)
+    )
+    evaluate_rollout_parser.add_argument("--count", type=int, default=3)
+    evaluate_rollout_parser.set_defaults(
+        processed_dir=Path("data/processed/vpt_v2"),
+        manifest=Path("data/manifests/vpt_v2.jsonl"),
+        autoencoder_checkpoint=Path("artifacts/autoencoder-v2/best.pt"),
+    )
     return parser
 
 
@@ -469,6 +492,36 @@ def main(argv: list[str] | None = None) -> int:
             f"{metrics.shuffled_action_degradation:+.6f}"
         )
         print(f"visual:                    {result.comparison_grid}")
+        return 0
+
+    if args.command == "evaluate-rollout":
+        result = evaluate_saved_rollouts(
+            args.processed_dir,
+            args.autoencoder_checkpoint,
+            args.dynamics_checkpoint,
+            args.output_dir,
+            manifest_path=args.manifest,
+            horizons=tuple(args.horizons),
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            count=args.count,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        print(f"device:        {result.device}")
+        print(f"examples:      {result.example_count:,}")
+        print(f"max horizon:   {result.max_horizon} steps")
+        print("horizon  recursive MSE  copy gain  action penalty  beats copy")
+        for metrics in result.horizons:
+            print(
+                f"{metrics.horizon:7d}  {metrics.recursive_pixel_mse:13.6f}  "
+                f"{metrics.copy_improvement_percent:8.1f}%  "
+                f"{metrics.shuffled_action_pixel_penalty_percent:12.1f}%  "
+                f"{str(metrics.beats_copy_pixel):>10s}"
+            )
+        print(f"curve:         {result.error_curve}")
+        print(f"filmstrips:    {result.filmstrips}")
+        print(f"metrics:       {result.metrics_path}")
         return 0
 
     video, actions = _episode_paths(args.data_dir, args.episode)

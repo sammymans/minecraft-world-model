@@ -223,6 +223,47 @@ We will not choose an arbitrary metric threshold before observing the full
 curves. Baseline-relative results and stability across examples matter more
 than one absolute pixel number.
 
+## Measured `vpt_v2` result
+
+The implemented evaluator found 288 held-out starting points with a fully clean
+20-step future. Every horizon below therefore uses the same examples.
+Consequently, its one-step row is a stricter subset and should not be compared
+directly with the earlier one-step evaluation over all valid transitions.
+
+| horizon | recursive pixel MSE | teacher-forced MSE | frozen-copy MSE | copy improvement | mismatched-action penalty |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.009323 | 0.009323 | 0.011720 | 20.4% | 33.7% |
+| 2 | 0.013902 | 0.009195 | 0.018294 | 24.0% | 38.5% |
+| 5 | 0.023579 | 0.008879 | 0.030910 | 23.7% | 33.8% |
+| 10 | 0.033395 | 0.007658 | 0.044952 | 25.7% | 30.7% |
+| 20 | 0.044008 | 0.007375 | 0.056160 | 21.6% | 10.0% |
+
+This passes the quantitative gate:
+
+- recursive predictions beat frozen copy through all 20 steps;
+- correct actions beat mismatched actions at every measured horizon;
+- error grows gradually rather than exploding; and
+- action influence remains strong through one second, then weakens by two
+  seconds.
+
+The teacher-forced curve remains near $0.008$ while recursive error grows to
+$0.044$. This isolates compounding prediction error as the main long-horizon
+problem rather than ordinary one-step prediction.
+
+The visual result is more qualified. Scenes remain recognizable for two
+seconds, and some mismatched-action branches visibly diverge, but predictions
+are blurred and often under-follow large camera or position changes. The model
+learns a useful expected future rather than a crisp video simulation.
+
+The old-encoder control produces recursive MSE $0.009165$, $0.013342$,
+$0.021471$, $0.031130$, and $0.044301$ at the same horizons. It is slightly
+better through one second and slightly worse at two seconds. The conclusion
+therefore does not depend on which encoder pair is selected.
+
+Milestone 5 is complete as a small world-model demonstration. Short-horizon
+rollout training remains a quality improvement before or alongside the first
+interactive viewer, not a prerequisite for proving recursion works.
+
 ## What happens if recursion fails
 
 The first correction is short-horizon rollout training, not a large new model.
@@ -267,9 +308,9 @@ The viewer will:
 Recursive evaluation is therefore the offline safety check for the exact loop
 that will power interaction.
 
-## Planned command and outputs
+## Command and outputs
 
-The next implementation will add a command shaped like:
+Recreate the selected evaluation with:
 
 ```bash
 uv run mcwm evaluate-rollout \
@@ -281,8 +322,7 @@ uv run mcwm evaluate-rollout \
   --horizons 1 2 5 10 20
 ```
 
-This command is a specification for the next milestone; it is not implemented
-yet. Expected outputs are:
+The command writes:
 
 ```text
 artifacts/rollout-v2/metrics.json

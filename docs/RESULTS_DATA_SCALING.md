@@ -126,7 +126,14 @@ uv run mcwm dataset-expand-manifest \
   --output data/manifests/vpt_v3.jsonl \
   --target-gib 50 \
   --seed 7
+
+caffeinate -i uv run mcwm dataset-download \
+  --manifest data/manifests/vpt_v3.jsonl \
+  --workers 3
 ```
+
+The target is 50 GiB in total, so this adds approximately 25 GiB to the existing
+V2 download. Existing complete files are detected and skipped.
 
 Then run two experiments:
 
@@ -141,7 +148,7 @@ pipeline at the new scale. Add both rows here, along with:
 - autoencoder L1, MSE, and PSNR;
 - learned, decoded-copy, and decoder-oracle pixel error;
 - correct-versus-shuffled action error; and
-- multi-step errors at horizons 1, 2, 5, 10, and 20 once implemented.
+- multi-step errors at horizons 1, 2, 5, 10, and 20.
 
 ## Current conclusion
 
@@ -152,6 +159,26 @@ $$
 7{,}314\longrightarrow148{,}069
 $$
 
-The next scientific question is whether this one-step improvement survives
-recursive use. That protocol is defined in
-`LEARNING_06_MULTI_STEP_EVALUATION.md`.
+The one-step improvement also survives recursive use: the learned rollout beats
+frozen decoded copy at all measured horizons through 20 steps. The remaining
+limitations are visual blur and weakening action influence at longer horizons.
+The complete protocol is explained in `LEARNING_06_MULTI_STEP_EVALUATION.md`.
+
+## Multi-step baseline for future data scales
+
+The selected `vpt_v2` pair was recursively evaluated on 288 held-out starts
+that each have a clean 20-step future:
+
+| horizon | recursive pixel MSE | copy improvement | mismatched-action penalty |
+|---:|---:|---:|---:|
+| 1 | 0.009323 | 20.4% | 33.7% |
+| 2 | 0.013902 | 24.0% | 38.5% |
+| 5 | 0.023579 | 23.7% | 33.8% |
+| 10 | 0.033395 | 25.7% | 30.7% |
+| 20 | 0.044008 | 21.6% | 10.0% |
+
+These values are the baseline for `vpt_v3`. Future rollout comparisons must
+retain the same frozen validation group, maximum horizon, and 288-window index.
+The horizon-1 value is not directly comparable to the earlier one-step result:
+this table deliberately uses only starting points that also possess a clean
+20-step future, keeping the sample set identical across every horizon.
