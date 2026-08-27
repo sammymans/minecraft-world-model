@@ -172,6 +172,54 @@ def evaluate_diffusion(
     )
 
 
+class SampledDynamics(nn.Module):
+    """Present a diffusion model through the deterministic dynamics interface.
+
+    The rollout evaluator and the interactive engine both call the dynamics as
+    ``dynamics(previous, current, action)``. Wrapping the sampler here keeps a
+    single recursive rollout implementation rather than a parallel one.
+    """
+
+    def __init__(
+        self,
+        model: SpatialLatentDiffusion,
+        *,
+        sampling_steps: int = 50,
+        seed: int = 7,
+    ):
+        super().__init__()
+        if sampling_steps < 1:
+            raise ValueError("sampling_steps must be positive")
+        self.model = model
+        self.sampling_steps = sampling_steps
+        self.latent_channels = model.latent_channels
+        self.action_dim = model.action_dim
+        self._seed = seed
+        self._calls = 0
+
+    def reset_sampling(self) -> None:
+        """Restart the noise stream so a rollout can be reproduced exactly."""
+        self._calls = 0
+
+    def forward(
+        self,
+        previous_latent: torch.Tensor,
+        current_latent: torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        # Each step draws fresh noise, but from a stream that a caller can
+        # rewind, so a rollout stays reproducible without being frozen.
+        generator = torch.Generator().manual_seed(self._seed + self._calls)
+        self._calls += 1
+        return self.model.sample(
+            previous_latent,
+            current_latent,
+            action,
+            steps=self.sampling_steps,
+            generator=generator,
+        )
+
+
 def _save_checkpoint(
     path: Path,
     model: SpatialLatentDiffusion,

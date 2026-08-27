@@ -433,6 +433,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_rollout_parser.add_argument(
         "--split", choices=("validation", "test"), default="validation"
     )
+    evaluate_rollout_parser.add_argument(
+        "--sampling-steps",
+        type=int,
+        help="override the DDIM steps stored in a diffusion checkpoint",
+    )
 
     play_rollout_parser = commands.add_parser(
         "play-rollout", help="control a recursively imagined Minecraft latent state"
@@ -993,6 +998,7 @@ def main(argv: list[str] | None = None) -> int:
             count=args.count,
             maximum_examples=args.maximum_examples,
             split=args.split,
+            sampling_steps=args.sampling_steps,
             seed=args.seed,
             requested_device=args.device,
         )

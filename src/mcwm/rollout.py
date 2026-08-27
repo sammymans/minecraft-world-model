@@ -28,6 +28,7 @@ from mcwm.model import (
     SpatialLatentDynamics,
     TinyAutoencoder,
 )
+from mcwm.spatial_diffusion import SampledDynamics, load_spatial_diffusion_checkpoint
 from mcwm.spatial_dynamics import (
     SpatialEncodedDynamicsDataset,
     load_spatial_dynamics_checkpoint,
@@ -559,6 +560,7 @@ def evaluate_saved_rollouts(
     count: int = 3,
     maximum_examples: int = 5_000,
     split: DatasetSplit = "validation",
+    sampling_steps: int | None = None,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> RolloutEvaluationResult:
@@ -567,8 +569,23 @@ def evaluate_saved_rollouts(
         raise ValueError("rollout evaluation split must be validation or test")
     device = choose_device(requested_device)
     checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    spatial = checkpoint.get("model_type") == "spatial_latent_dynamics"
-    if spatial:
+    diffusion = checkpoint.get("model_type") == "spatial_latent_diffusion"
+    spatial = diffusion or checkpoint.get("model_type") == "spatial_latent_dynamics"
+    if diffusion:
+        sampler, dynamics_metadata = load_spatial_diffusion_checkpoint(
+            dynamics_checkpoint, device
+        )
+        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
+            autoencoder_checkpoint
+        ):
+            raise ValueError("spatial diffusion belongs to a different autoencoder checkpoint")
+        dynamics = SampledDynamics(
+            sampler, sampling_steps=sampling_steps or int(dynamics_metadata["sampling_steps"])
+        )
+        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+        if autoencoder.latent_channels != dynamics.latent_channels:
+            raise ValueError("autoencoder and dynamics latent channels do not match")
+    elif spatial:
         dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
             dynamics_checkpoint, device
         )
