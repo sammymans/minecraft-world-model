@@ -43,6 +43,7 @@ should add several new held-out groups as a second test set.
 |---|---:|---:|---:|---:|---:|
 | `vpt_v1` | 2.16 GiB | 0.89 | 31,936 | 7,314 | 5,605 |
 | `vpt_v2` | 25.14 GiB | 12.81 | 461,191 | 148,069 | 117,348 |
+| `vpt_v3` | 50.05 GiB | — | 781,732 | — | 245,087 |
 
 `vpt_v2` therefore supplies approximately 20.2 times as many clean one-step
 examples as `vpt_v1`.
@@ -59,6 +60,26 @@ parameters.
 
 The larger visual dataset lowers reconstruction MSE by approximately 30%
 without increasing the latent dimension.
+
+### Spatial representation redesign
+
+The V1 interactive rollout showed that the flat 256-value representation was
+too destructive: a decoder oracle supplied with the real next latent was
+already blurry. We therefore changed both architecture and data scale. These
+rows are not a controlled data-only comparison; they answer whether the new
+representation is a better foundation for future dynamics.
+
+| run | representation | sampled training frames | validation L1 | validation MSE | validation PSNR | edge-energy ratio |
+|---|---|---:|---:|---:|---:|---:|
+| flat V2 checkpoint | 256 values | 392,924 | 0.021275 | 0.001491 | 28.27 dB | not recorded |
+| spatial V3 pilot | $16\times16\times16$ | 20,000 | **0.016133** | **0.000934** | **30.30 dB** | 0.711 |
+| spatial V3 selected | $16\times16\times16$ | 100,000 | **0.006743** | **0.000180** | **37.46 dB** | **0.974** |
+
+The pilot also passed a 32-frame memorization gate with L1 $0.006326$ and an
+edge-energy ratio of $0.896$. The selected result trained for 12 epochs; its
+training L1 is $0.006390$, close to held-out L1. See
+`LEARNING_08_SPATIAL_AUTOENCODER.md` for the architecture, loss, failed first
+attempt, and interpretation.
 
 ## One-step dynamics results
 
@@ -135,13 +156,10 @@ caffeinate -i uv run mcwm dataset-download \
 The target is 50 GiB in total, so this adds approximately 25 GiB to the existing
 V2 download. Existing complete files are detected and skipped.
 
-Then run two experiments:
-
-1. freeze `artifacts/autoencoder-v2/best.pt` and train dynamics on `vpt_v3`;
-2. train a new autoencoder on `vpt_v3`, then train its paired dynamics model.
-
-The first isolates dynamics-data scaling. The second measures the complete
-pipeline at the new scale. Add both rows here, along with:
+The V3 dataset is now downloaded and verified. The flat-latent scaling plan was
+superseded after decoder-oracle and interactive tests identified the
+representation itself as a bottleneck. The active experiment trains the spatial
+autoencoder on V3, followed by its paired spatial dynamics model. Record:
 
 - manifest SHA-256;
 - raw size, training hours, frames, and clean examples;
@@ -152,17 +170,19 @@ pipeline at the new scale. Add both rows here, along with:
 
 ## Current conclusion
 
-The first scaling step is a clear positive result. The main improvement came
-from increasing action-labelled dynamics examples, not increasing network size:
+The first scaling step was a clear positive result. The main V1 dynamics
+improvement came from increasing action-labelled examples, not network size:
 
 $$
 7{,}314\longrightarrow148{,}069
 $$
 
-The one-step improvement also survives recursive use: the learned rollout beats
-frozen decoded copy at all measured horizons through 20 steps. The remaining
-limitations are visual blur and weakening action influence at longer horizons.
-The complete protocol is explained in `LEARNING_06_MULTI_STEP_EVALUATION.md`.
+That improvement survived recursive evaluation, but interactive use exposed
+visual blur and weak control more clearly than aggregate error did. The spatial
+autoencoder pilot improves held-out reconstruction substantially; spatial
+dynamics has not yet been trained, so we do not yet claim the redesigned world
+model works. The evaluation protocol remains the one in
+`LEARNING_06_MULTI_STEP_EVALUATION.md`.
 
 ## Multi-step baseline for future data scales
 

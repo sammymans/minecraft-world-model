@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from mcwm.model import TinyAutoencoder
+from mcwm.model import SpatialAutoencoder, TinyAutoencoder
 
 
 def test_autoencoder_shapes_and_range() -> None:
@@ -36,3 +36,18 @@ def test_autoencoder_can_reduce_loss_on_a_tiny_fixed_batch() -> None:
         final = torch.nn.functional.mse_loss(model(frames), frames).item()
 
     assert final < initial
+
+
+def test_spatial_autoencoder_preserves_a_16_by_16_feature_map() -> None:
+    model = SpatialAutoencoder(latent_channels=16, base_channels=16)
+    frames = torch.rand(3, 3, 64, 64)
+
+    latents = model.encode(frames)
+    reconstructed = model.decode(latents)
+
+    assert latents.shape == (3, 16, 16, 16)
+    assert reconstructed.shape == frames.shape
+    assert model.latent_shape == (16, 16, 16)
+    assert model.latent_value_count == 4096
+    assert reconstructed.isfinite().all()
+    assert model.parameter_count < 1_000_000

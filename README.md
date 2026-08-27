@@ -31,13 +31,14 @@ lessons are:
 5. [Action-conditioned latent dynamics](docs/LEARNING_05_LATENT_DYNAMICS.md)
 6. [Multi-step recursive evaluation](docs/LEARNING_06_MULTI_STEP_EVALUATION.md)
 7. [Interactive latent rollout](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md)
+8. [Spatial representation redesign](docs/LEARNING_08_SPATIAL_AUTOENCODER.md)
 
 Measured scaling results are tracked in
 [docs/RESULTS_DATA_SCALING.md](docs/RESULTS_DATA_SCALING.md).
 
 ## Play the world model
 
-Open the interactive rollout viewer using the selected V2 checkpoints:
+Open the interactive rollout viewer using the reproducible V1 checkpoints:
 
 ```bash
 uv run mcwm play-rollout
@@ -54,19 +55,19 @@ scripted mode.
 
 The committed manifests define exact public episode pairs and group-safe
 splits; large data files remain ignored locally. The current larger experiment
-uses `vpt_v2`.
+uses `vpt_v3`.
 
 ```bash
-uv run mcwm dataset-download --manifest data/manifests/vpt_v2.jsonl
+uv run mcwm dataset-download --manifest data/manifests/vpt_v3.jsonl
 uv run mcwm dataset-preprocess \
-  --manifest data/manifests/vpt_v2.jsonl \
-  --output-dir data/processed/vpt_v2
+  --manifest data/manifests/vpt_v3.jsonl \
+  --output-dir data/processed/vpt_v3
 uv run mcwm dataset-verify \
-  --manifest data/manifests/vpt_v2.jsonl \
-  --processed-dir data/processed/vpt_v2
+  --manifest data/manifests/vpt_v3.jsonl \
+  --processed-dir data/processed/vpt_v3
 uv run mcwm dataset-summary \
-  --manifest data/manifests/vpt_v2.jsonl \
-  --processed-dir data/processed/vpt_v2
+  --manifest data/manifests/vpt_v3.jsonl \
+  --processed-dir data/processed/vpt_v3
 ```
 
 ## Try the first data pipeline
@@ -85,13 +86,14 @@ action drawn on each frame. It is not a model prediction yet.
 
 ## Current status
 
-The verified `vpt_v2` pipeline has 173 episodes, 12.81 training hours, and
-148,069 clean one-step examples. The selected 1.4-million-parameter autoencoder
-compresses each frame into 256 values and reaches 28.27 dB on the frozen
-held-out session. Its paired action-conditioned dynamics model beats decoded
-copy by 17.0%; shuffling actions worsens pixel MSE by 26.9%. Recursive
-predictions beat frozen copy through 20 held-out steps, although they become
-blurred and action influence weakens by two seconds. The next milestone is the
-V3 scaling comparison and optional short-horizon rollout training. The first
-interactive viewer is implemented and uses the same recursive loop as the
-offline evaluator.
+The verified `vpt_v3` pipeline has 345 episodes, 343 training episodes, 245,087
+clean eight-step training sequences, and 781,732 usable representation frames.
+The first flat-latent world model remains reproducible, but its interactive
+rollout exposed immediate decoder blur and weak action influence. We therefore
+stopped scaling that model and replaced its 256-value flat representation with
+a 253,395-parameter spatial autoencoder whose latent shape is
+$16\times16\times16$. The selected 100,000-frame checkpoint reaches 37.46 dB,
+L1 0.00674, and a 0.974 edge-energy ratio on the frozen held-out episodes,
+versus 28.27 dB and L1 0.02128 for the old model. The next step is to train and
+evaluate spatial action-conditioned dynamics, then reconnect the browser
+frontend. The recorder remains last.

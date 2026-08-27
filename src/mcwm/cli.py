@@ -24,6 +24,11 @@ from mcwm.manifest import (
 )
 from mcwm.preview import create_preview, inspect_episode
 from mcwm.rollout import evaluate_saved_rollouts
+from mcwm.spatial_training import (
+    evaluate_saved_spatial_autoencoder,
+    sanity_overfit_spatial_autoencoder,
+    train_spatial_autoencoder,
+)
 from mcwm.training import evaluate_saved_autoencoder, sanity_overfit, train_full_autoencoder
 from mcwm.vpt import load_actions
 
@@ -192,6 +197,74 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--batch-size", type=int, default=64)
     evaluate.add_argument("--count", type=int, default=8)
     evaluate.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
+
+    spatial_sanity = commands.add_parser(
+        "sanity-spatial-autoencoder",
+        help="memorize a tiny frame set with the spatial autoencoder",
+    )
+    spatial_sanity.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v3"))
+    spatial_sanity.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v3.jsonl")
+    )
+    spatial_sanity.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-autoencoder-sanity")
+    )
+    spatial_sanity.add_argument("--frames", type=int, default=32)
+    spatial_sanity.add_argument("--steps", type=int, default=500)
+    spatial_sanity.add_argument("--latent-channels", type=int, default=16)
+    spatial_sanity.add_argument("--base-channels", type=int, default=32)
+    spatial_sanity.add_argument("--edge-weight", type=float, default=0.25)
+    spatial_sanity.add_argument("--learning-rate", type=float, default=1e-3)
+    spatial_sanity.add_argument("--seed", type=int, default=7)
+    spatial_sanity.add_argument("--device", default="auto")
+
+    spatial_train = commands.add_parser(
+        "train-spatial-autoencoder",
+        help="train the edge-preserving spatial representation",
+    )
+    spatial_train.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v3"))
+    spatial_train.add_argument("--manifest", type=Path, default=Path("data/manifests/vpt_v3.jsonl"))
+    spatial_train.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-autoencoder-v3")
+    )
+    spatial_train.add_argument("--epochs", type=int, default=30)
+    spatial_train.add_argument("--batch-size", type=int, default=64)
+    spatial_train.add_argument("--latent-channels", type=int, default=16)
+    spatial_train.add_argument("--base-channels", type=int, default=32)
+    spatial_train.add_argument("--edge-weight", type=float, default=0.25)
+    spatial_train.add_argument("--learning-rate", type=float, default=1e-3)
+    spatial_train.add_argument("--patience", type=int, default=6)
+    spatial_train.add_argument(
+        "--max-training-frames",
+        type=int,
+        default=0,
+        help="deterministic frame subset; 0 uses all available training frames",
+    )
+    spatial_train.add_argument("--seed", type=int, default=7)
+    spatial_train.add_argument("--device", default="auto")
+
+    spatial_evaluate = commands.add_parser(
+        "evaluate-spatial-autoencoder",
+        help="evaluate a saved spatial autoencoder checkpoint",
+    )
+    spatial_evaluate.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v3")
+    )
+    spatial_evaluate.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v3.jsonl")
+    )
+    spatial_evaluate.add_argument(
+        "--checkpoint", type=Path, default=Path("artifacts/spatial-autoencoder-v3/best.pt")
+    )
+    spatial_evaluate.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-autoencoder-v3-eval")
+    )
+    spatial_evaluate.add_argument(
+        "--split", choices=("training", "validation"), default="validation"
+    )
+    spatial_evaluate.add_argument("--batch-size", type=int, default=64)
+    spatial_evaluate.add_argument("--count", type=int, default=8)
+    spatial_evaluate.add_argument("--device", default="auto")
 
     train_dynamics_parser = commands.add_parser(
         "train-dynamics", help="train one-step action-conditioned latent dynamics"
@@ -476,6 +549,79 @@ def main(argv: list[str] | None = None) -> int:
         print(f"PSNR:    {result.metrics.psnr_db:.2f} dB")
         print(f"visual:  {result.reconstruction_grid}")
         print(f"curve:   {result.training_curve}")
+        return 0
+
+    if args.command == "sanity-spatial-autoencoder":
+        result = sanity_overfit_spatial_autoencoder(
+            args.processed_dir,
+            args.manifest,
+            args.output_dir,
+            frame_count=args.frames,
+            steps=args.steps,
+            latent_channels=args.latent_channels,
+            base_channels=args.base_channels,
+            edge_weight=args.edge_weight,
+            learning_rate=args.learning_rate,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        print(f"device:       {result.device}")
+        print(f"latent shape: {result.latent_shape}")
+        print(f"parameters:   {result.parameter_count:,}")
+        print(f"memorized L1: {result.train_metrics.pixel_l1:.6f}")
+        print(f"edge ratio:   {result.train_metrics.gradient_energy_ratio:.3f}")
+        print(f"checkpoint:   {result.checkpoint}")
+        print(f"visual:       {result.reconstruction_grid}")
+        return 0
+
+    if args.command == "train-spatial-autoencoder":
+        result = train_spatial_autoencoder(
+            args.processed_dir,
+            args.manifest,
+            args.output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            latent_channels=args.latent_channels,
+            base_channels=args.base_channels,
+            edge_weight=args.edge_weight,
+            learning_rate=args.learning_rate,
+            patience=args.patience,
+            max_training_frames=args.max_training_frames or None,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        validation = result.validation_metrics
+        if validation is None:
+            raise RuntimeError("spatial training did not evaluate validation data")
+        print(f"device:          {result.device}")
+        print(f"latent shape:    {result.latent_shape}")
+        print(f"parameters:      {result.parameter_count:,}")
+        print(f"validation L1:   {validation.pixel_l1:.6f}")
+        print(f"validation PSNR: {validation.psnr_db:.2f} dB")
+        print(f"edge ratio:      {validation.gradient_energy_ratio:.3f}")
+        print(f"checkpoint:      {result.checkpoint}")
+        print(f"visual:          {result.reconstruction_grid}")
+        return 0
+
+    if args.command == "evaluate-spatial-autoencoder":
+        result = evaluate_saved_spatial_autoencoder(
+            args.processed_dir,
+            args.manifest,
+            args.checkpoint,
+            args.output_dir,
+            split=args.split,
+            batch_size=args.batch_size,
+            count=args.count,
+            requested_device=args.device,
+        )
+        print(f"device:       {result.device}")
+        print(f"frames:       {result.frame_count:,}")
+        print(f"latent shape: {result.latent_shape}")
+        print(f"pixel L1:     {result.metrics.pixel_l1:.6f}")
+        print(f"pixel MSE:    {result.metrics.pixel_mse:.6f}")
+        print(f"PSNR:         {result.metrics.psnr_db:.2f} dB")
+        print(f"edge ratio:   {result.metrics.gradient_energy_ratio:.3f}")
+        print(f"visual:       {result.reconstruction_grid}")
         return 0
 
     if args.command == "train-dynamics":

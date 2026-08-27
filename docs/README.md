@@ -22,6 +22,10 @@
 - [Learning 07: interactive rollout](LEARNING_07_INTERACTIVE_ROLLOUT.md) — live
   action construction, recursive latent state updates, viewer controls, and a
   reproducible scripted mode.
+- [Learning 08: spatial autoencoder](LEARNING_08_SPATIAL_AUTOENCODER.md) — why
+  the first interactive model blurred, decoder-oracle diagnosis, the spatial
+  latent redesign, edge-aware reconstruction, and the gates before retraining
+  dynamics.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

@@ -64,6 +64,59 @@ class TinyAutoencoder(nn.Module):
         return sum(parameter.numel() for parameter in self.parameters())
 
 
+class SpatialAutoencoder(nn.Module):
+    """Preserve Minecraft layout in a compact 16x16 latent feature map."""
+
+    def __init__(self, latent_channels: int = 16, base_channels: int = 32):
+        super().__init__()
+        if latent_channels < 1:
+            raise ValueError("latent_channels must be positive")
+        if base_channels < 1:
+            raise ValueError("base_channels must be positive")
+        self.latent_channels = latent_channels
+        self.base_channels = base_channels
+        channels = (base_channels, base_channels * 2, base_channels * 4)
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, channels[0], kernel_size=4, stride=2, padding=1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels[0], channels[1], kernel_size=4, stride=2, padding=1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels[1], channels[2], kernel_size=3, padding=1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels[2], latent_channels, kernel_size=3, padding=1),
+        )
+        self.decoder = nn.Sequential(
+            nn.Conv2d(latent_channels, channels[2], kernel_size=3, padding=1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels[2], channels[1], kernel_size=3, padding=1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(channels[1], channels[0], kernel_size=4, stride=2, padding=1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(channels[0], 3, kernel_size=4, stride=2, padding=1),
+        )
+
+    def encode(self, frames: torch.Tensor) -> torch.Tensor:
+        return self.encoder(frames)
+
+    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        return self.decoder(latents)
+
+    def forward(self, frames: torch.Tensor) -> torch.Tensor:
+        return self.decode(self.encode(frames))
+
+    @property
+    def latent_shape(self) -> tuple[int, int, int]:
+        return (self.latent_channels, 16, 16)
+
+    @property
+    def latent_value_count(self) -> int:
+        return self.latent_channels * 16 * 16
+
+    @property
+    def parameter_count(self) -> int:
+        return sum(parameter.numel() for parameter in self.parameters())
+
+
 class LatentDynamics(nn.Module):
     """Predict the next visual latent from motion context and one raw action."""
 

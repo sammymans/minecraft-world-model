@@ -147,7 +147,8 @@ $$
 The initial model should be tiny enough to inspect and train locally:
 
 - input frames: $64 \times 64$ RGB;
-- latent size: 256 values in the current quality-focused version;
+- V1 latent: a flat 256-value vector, retained as a baseline;
+- current latent: a $16\times16\times16$ spatial feature map (4,096 values);
 - encoder and decoder: a few convolutional layers;
 - dynamics: a residual MLP;
 - deterministic predictions; and
@@ -292,10 +293,11 @@ Deliverables:
 Completion test: one command shows a batch with shapes and an ordered visual
 sequence whose actions make sense.
 
-Status: complete. Dataset `vpt_v2` contains 173 public episodes from 171
-independent sessions, processed into 10 Hz, $64\times64$ canonical episodes. It
-provides 148,069 clean one-step examples and 117,348 eight-step training
-sequences while preserving the original frozen validation group.
+Status: complete. Dataset `vpt_v3` contains 345 public episodes, split into 343
+training episodes and two frozen validation episodes, processed into 10 Hz,
+$64\times64$ canonical episodes. It provides 781,732 usable representation
+frames and 245,087 clean eight-step training sequences while preserving the
+original frozen validation group.
 
 ### Milestone 3 — visual autoencoder
 
@@ -309,10 +311,14 @@ Deliverables:
 Completion test: held-out reconstructions are recognizable enough that we can
 identify the scene and camera direction.
 
-Status: complete. A 1,396,835-parameter convolutional autoencoder compresses
-each $64\times64$ RGB frame from 12,288 pixel values to 256 latent values. The
-larger-data checkpoint reaches held-out MSE $0.00149$, L1 $0.02128$, and PSNR
-$28.27$ dB without increasing the latent size.
+Status: redesigned after interactive testing. The original 1,396,835-parameter
+autoencoder compressed each frame to a flat 256-value vector and reached
+$28.27$ dB, but decoder-oracle diagnostics showed that it discarded too much
+spatial detail. The replacement is a 253,395-parameter convolutional
+autoencoder with a $16\times16\times16$ spatial latent. The selected checkpoint
+trained on 100,000 V3 frames and reaches held-out MSE $0.000180$, L1 $0.00674$,
+PSNR $37.46$ dB, and a $0.974$ edge-energy ratio. See Learning 08 for the
+diagnosis and gates.
 
 ### Milestone 4 — latent dynamics
 
@@ -327,11 +333,11 @@ Deliverables:
 Completion test: predictions on held-out sequences change with the supplied
 action, and shuffling actions makes prediction worse.
 
-Status: complete. On the unchanged held-out session, the selected model beats
-decoded copy by 17.0%, and shuffling actions worsens pixel MSE by 26.9%. The
-controlled old-encoder experiment improves from a 0.2% to a 24.0% latent
-shuffled-action penalty when dynamics data grows from 7,314 to 148,069 clean
-examples.
+Status: V1 complete; spatial replacement pending. On the unchanged held-out
+session, the V1 model beats decoded copy by 17.0%, and shuffling actions worsens
+pixel MSE by 26.9%. The controlled old-encoder experiment improves from a 0.2%
+to a 24.0% latent shuffled-action penalty when dynamics data grows from 7,314
+to 148,069 clean examples.
 
 ### Milestone 5 — open-loop evaluation
 
@@ -363,11 +369,13 @@ Deliverables:
 Completion test: changing the controls produces visibly different imagined
 futures without reading new frames from Minecraft.
 
-Status: implemented. The local web frontend accepts held movement keys and
-pointer-lock camera controls, shows only the current imagined view, runs the
-dynamics model recursively at 10 Hz, and includes a reproducible scripted mode.
-The real V2 checkpoint HTTP path has been verified end to end. Expected model
-limitations remain blur and conservative motion.
+Status: frontend implemented; V1 model rejected as the final model. The local
+web frontend accepts held movement keys and pointer-lock camera controls, shows
+only the current imagined view, runs the dynamics model recursively at 10 Hz,
+and includes a reproducible scripted mode. The V1 checkpoint HTTP path has been
+verified end to end, but interactive use revealed unacceptable blur and
+conservative motion. It will be reconnected after the spatial dynamics model
+passes offline evaluation.
 
 ### Milestone 7 — recorder replacement
 
