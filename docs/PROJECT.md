@@ -200,8 +200,9 @@ two real seed frames
 ```
 
 No new Minecraft frame is shown after the seed. Every displayed future frame
-comes from the model. A small local Pyglet window is sufficient; it provides
-held-key and relative-mouse input without adding a browser or server.
+comes from the model. A small local browser page shows only the current imagined
+view and provides held-key and pointer-lock mouse input. It is served directly
+by the Python process with no frontend build or external service.
 
 The rollout will eventually drift or blur. That is expected. We want to see how
 long the model remains coherent, how its predictions respond to controls, and
@@ -354,7 +355,7 @@ blur and under-follow large changes.
 
 Deliverables:
 
-- local interactive window;
+- local single-viewport browser frontend;
 - real seed-frame selection;
 - keyboard and mouse action input; and
 - live display of recursively imagined frames.
@@ -362,11 +363,11 @@ Deliverables:
 Completion test: changing the controls produces visibly different imagined
 futures without reading new frames from Minecraft.
 
-Status: implemented. The local viewer accepts movement and camera controls,
-runs the dynamics model recursively at 10 Hz, and includes a reproducible
-headless script mode. The full V2 checkpoint path has been validated for 20
-imagined steps. Live manual action comparison remains the final qualitative
-check; expected limitations are blur and conservative motion.
+Status: implemented. The local web frontend accepts held movement keys and
+pointer-lock camera controls, shows only the current imagined view, runs the
+dynamics model recursively at 10 Hz, and includes a reproducible scripted mode.
+The real V2 checkpoint HTTP path has been verified end to end. Expected model
+limitations remain blur and conservative motion.
 
 ### Milestone 7 — recorder replacement
 

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minecraft Latent World</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f4f7ef;
+      --muted: #9da99a;
+      --line: rgba(255, 255, 255, .11);
+      --panel: rgba(17, 22, 18, .88);
+      --green: #8fd05f;
+      --green-dark: #172615;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% -20%, #30442b 0, transparent 44%),
+        linear-gradient(150deg, #101510, #080b09 70%);
+      color: var(--ink);
+      font: 500 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .app {
+      width: min(1120px, 100vw);
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 22px clamp(16px, 3vw, 40px) 18px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 18px;
+    }
+    header, footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .eyebrow { color: var(--green); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin: 3px 0 0; font: 650 clamp(18px, 2.3vw, 28px)/1.1 system-ui, sans-serif; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .badge, button {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel);
+      color: var(--ink);
+      padding: 8px 11px;
+      font: inherit;
+    }
+    .badge.live { border-color: rgba(143, 208, 95, .5); color: var(--green); }
+    .stage {
+      min-height: 0;
+      position: relative;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: hidden;
+      background: #050705;
+      box-shadow: 0 28px 80px rgba(0, 0, 0, .4);
+      cursor: crosshair;
+      outline: none;
+    }
+    #frame {
+      width: 100%;
+      height: 100%;
+      max-height: calc(100vh - 180px);
+      object-fit: contain;
+      image-rendering: auto;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .crosshair {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 14px; height: 14px;
+      transform: translate(-50%, -50%);
+      opacity: .65;
+      pointer-events: none;
+    }
+    .crosshair::before, .crosshair::after {
+      content: ""; position: absolute; background: white;
+      box-shadow: 0 0 2px black;
+    }
+    .crosshair::before { width: 14px; height: 2px; top: 6px; }
+    .crosshair::after { width: 2px; height: 14px; left: 6px; }
+    .hint {
+      position: absolute;
+      inset: auto 14px 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .hint span {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(4, 7, 5, .76);
+      backdrop-filter: blur(8px);
+      padding: 7px 9px;
+      color: var(--muted);
+    }
+    .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    button { cursor: pointer; transition: border-color .15s, background .15s; }
+    button:hover { border-color: var(--green); background: var(--green-dark); }
+    button.primary { background: var(--green); color: #10180d; border-color: var(--green); font-weight: 750; }
+    .meta { color: var(--muted); text-align: right; font-size: 12px; }
+    kbd { color: var(--ink); }
+    @media (max-width: 700px) {
+      .app { padding: 12px; gap: 10px; }
+      header, footer { align-items: flex-start; flex-direction: column; }
+      .badges { justify-content: flex-start; }
+      .meta { text-align: left; }
+      #frame { max-height: calc(100vh - 260px); }
+      .hint { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <div class="eyebrow">Tiny latent world model</div>
+        <h1>Minecraft imagined rollout</h1>
+      </div>
+      <div class="badges">
+        <span class="badge" id="step">t+0</span>
+        <span class="badge" id="action">IDLE</span>
+        <span class="badge" id="status">READY</span>
+      </div>
+    </header>
+
+    <main class="stage" id="stage" tabindex="0" aria-label="Imagined Minecraft viewport">
+      <img id="frame" alt="Current imagined Minecraft frame">
+      <div class="crosshair"></div>
+      <div class="hint">
+        <span><kbd>WASD</kbd> move · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump</span>
+        <span>Click view for mouse look · <kbd>Esc</kbd> releases</span>
+      </div>
+    </main>
+
+    <footer>
+      <div class="controls">
+        <button class="primary" id="pause">Start idle</button>
+        <button id="reset">Reset rollout</button>
+        <button id="capture">Capture mouse</button>
+        <button id="stop">Stop server</button>
+      </div>
+      <div class="meta" id="meta">Loading model state…</div>
+    </footer>
+  </div>
+
+  <script>
+    const frame = document.querySelector('#frame');
+    const stage = document.querySelector('#stage');
+    const statusEl = document.querySelector('#status');
+    const stepEl = document.querySelector('#step');
+    const actionEl = document.querySelector('#action');
+    const pauseButton = document.querySelector('#pause');
+    const metaEl = document.querySelector('#meta');
+    const held = new Set();
+    let running = false;
+    let pending = false;
+    let mouseDx = 0;
+    let mouseDy = 0;
+    let frameUrl = null;
+    let timer = null;
+
+    const keyMap = {
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
+      Space: 'jump', ShiftLeft: 'sprint', ShiftRight: 'sprint',
+      ControlLeft: 'sneak', ControlRight: 'sneak',
+      ArrowLeft: 'look_left', ArrowRight: 'look_right',
+      ArrowUp: 'look_up', ArrowDown: 'look_down'
+    };
+
+    function setRunning(value) {
+      running = value;
+      statusEl.textContent = running ? 'RUNNING' : 'PAUSED';
+      statusEl.classList.toggle('live', running);
+      pauseButton.textContent = running ? 'Pause' : 'Start idle';
+    }
+
+    function showFrame(blob, response) {
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+      frameUrl = URL.createObjectURL(blob);
+      frame.src = frameUrl;
+      const step = response.headers.get('X-Rollout-Step') || '0';
+      const action = response.headers.get('X-Rollout-Action');
+      stepEl.textContent = `t+${step}`;
+      if (action) actionEl.textContent = action;
+    }
+
+    async function getFrame(path, options = {}) {
+      const response = await fetch(path, options);
+      if (!response.ok) throw new Error(await response.text());
+      showFrame(await response.blob(), response);
+    }
+
+    async function tick() {
+      if (!running || pending) return;
+      pending = true;
+      const dx = mouseDx;
+      const dy = mouseDy;
+      mouseDx = 0;
+      mouseDy = 0;
+      try {
+        await getFrame('/api/step', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({controls: [...held], mouse_dx: dx, mouse_dy: dy})
+        });
+      } catch (error) {
+        setRunning(false);
+        statusEl.textContent = 'ERROR';
+        console.error(error);
+      } finally {
+        pending = false;
+      }
+    }
+
+    window.addEventListener('keydown', event => {
+      const control = keyMap[event.code];
+      if (control) {
+        event.preventDefault();
+        held.add(control);
+        setRunning(true);
+      } else if (event.code === 'KeyP') {
+        setRunning(!running);
+      } else if (event.code === 'KeyR') {
+        document.querySelector('#reset').click();
+      }
+    });
+    window.addEventListener('keyup', event => {
+      const control = keyMap[event.code];
+      if (control) held.delete(control);
+    });
+    window.addEventListener('blur', () => held.clear());
+    document.addEventListener('mousemove', event => {
+      if (document.pointerLockElement === stage) {
+        mouseDx += event.movementX;
+        mouseDy += event.movementY;
+        setRunning(true);
+      }
+    });
+    document.addEventListener('pointerlockchange', () => {
+      document.querySelector('#capture').textContent =
+        document.pointerLockElement === stage ? 'Mouse captured' : 'Capture mouse';
+    });
+    stage.addEventListener('click', () => stage.requestPointerLock());
+    document.querySelector('#capture').addEventListener('click', () => stage.requestPointerLock());
+    pauseButton.addEventListener('click', () => setRunning(!running));
+    document.querySelector('#reset').addEventListener('click', async () => {
+      setRunning(false);
+      held.clear();
+      mouseDx = mouseDy = 0;
+      await getFrame('/api/reset', {method: 'POST'});
+      actionEl.textContent = 'IDLE';
+      statusEl.textContent = 'READY';
+    });
+    document.querySelector('#stop').addEventListener('click', async () => {
+      setRunning(false);
+      await fetch('/api/stop', {method: 'POST'});
+      statusEl.textContent = 'STOPPED';
+    });
+
+    async function initialize() {
+      const info = await fetch('/api/info').then(response => response.json());
+      metaEl.textContent = `seed ${info.seed_index}/${info.seed_count - 1} · ` +
+        `${info.episode} · step ${info.seed_step} · ${info.device}`;
+      await getFrame('/api/frame');
+      timer = setInterval(tick, 1000 / info.model_fps);
+      statusEl.textContent = 'READY';
+      stage.focus();
+    }
+    window.addEventListener('beforeunload', () => {
+      if (timer) clearInterval(timer);
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+    });
+    initialize().catch(error => {
+      statusEl.textContent = 'ERROR';
+      console.error(error);
+    });
+  </script>
+</body>
+</html>

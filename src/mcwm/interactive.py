@@ -327,173 +327,6 @@ def make_live_action(
     return make_action(controls, mouse_dx=mouse_dx, mouse_dy=mouse_dy)
 
 
-def run_interactive_window(
-    engine: InteractiveRolloutEngine,
-    seed: RolloutSeed,
-    *,
-    camera_step: float = 30.0,
-    snapshot_path: Path = Path("artifacts/interactive-rollout/snapshot.png"),
-) -> PlaygroundResult:
-    """Open a real-time held-key playground backed by the recursive model."""
-    if camera_step <= 0:
-        raise ValueError("camera_step must be positive")
-    import pyglet
-    from pyglet.window import key, mouse
-
-    try:
-        window = pyglet.window.Window(1000, 460, caption="Minecraft latent world model")
-    except Exception as error:
-        raise RuntimeError(
-            "Pyglet could not create a GUI window; use --script for headless mode"
-        ) from error
-    pressed = key.KeyStateHandler()
-    window.push_handlers(pressed)
-    active = False
-    mouse_captured = False
-    pending_mouse_x = 0.0
-    pending_mouse_y = 0.0
-    latest_action = make_action()
-    action_keys = {
-        key.W,
-        key.A,
-        key.S,
-        key.D,
-        key.SPACE,
-        key.LSHIFT,
-        key.RSHIFT,
-        key.LCTRL,
-        key.RCTRL,
-        key.H,
-        key.J,
-        key.K,
-        key.L,
-    }
-
-    def held_controls() -> set[str]:
-        controls: set[str] = set()
-        for name, symbol in (
-            ("w", key.W),
-            ("a", key.A),
-            ("s", key.S),
-            ("d", key.D),
-            ("jump", key.SPACE),
-            ("look_left", key.H),
-            ("look_down", key.J),
-            ("look_up", key.K),
-            ("look_right", key.L),
-        ):
-            if pressed[symbol]:
-                controls.add(name)
-        if pressed[key.LSHIFT] or pressed[key.RSHIFT]:
-            controls.add("sprint")
-        if pressed[key.LCTRL] or pressed[key.RCTRL]:
-            controls.add("sneak")
-        return controls
-
-    def image(frame: np.ndarray) -> pyglet.image.ImageData:
-        height, width = frame.shape[:2]
-        return pyglet.image.ImageData(
-            width,
-            height,
-            "RGB",
-            np.ascontiguousarray(frame).tobytes(),
-            pitch=-width * 3,
-        )
-
-    def label(text: str, x: int, y: int, size: int = 13) -> None:
-        pyglet.text.Label(
-            text,
-            x=x,
-            y=y,
-            font_size=size,
-            color=(235, 235, 235, 255),
-        ).draw()
-
-    @window.event
-    def on_draw() -> None:
-        window.clear()
-        panels = (seed.previous_frame, seed.current_frame, engine.current_frame)
-        labels = ("real seed t-1", "real seed t", f"imagined t+{engine.steps}")
-        for index, (frame, panel_label) in enumerate(zip(panels, labels, strict=True)):
-            x = 10 + index * 330
-            label(panel_label, x, 434, 14)
-            image(frame).blit(x, 98, width=320, height=320)
-        status = "RUNNING" if active else "READY / PAUSED"
-        capture = "captured" if mouse_captured else "free"
-        lines = (
-            f"{status} | step {engine.steps} ({engine.steps / seed.model_fps:.1f}s) | "
-            f"{_action_label(latest_action)} | mouse {capture}",
-            "Hold W/A/S/D, SHIFT sprint, CTRL sneak, SPACE jump | H/J/K/L look",
-            "Click to capture mouse | ESC release | TAB pause | R reset | G snapshot | Q quit",
-        )
-        for index, line in enumerate(lines):
-            label(line, 12, 70 - index * 25, 11)
-
-    @window.event
-    def on_key_press(symbol: int, _modifiers: int) -> None:
-        nonlocal active, mouse_captured, pending_mouse_x, pending_mouse_y
-        if symbol == key.Q:
-            window.close()
-        elif symbol == key.ESCAPE and mouse_captured:
-            mouse_captured = False
-            window.set_exclusive_mouse(False)
-        elif symbol == key.TAB:
-            active = not active
-        elif symbol == key.R:
-            active = False
-            pending_mouse_x = 0.0
-            pending_mouse_y = 0.0
-            engine.reset()
-        elif symbol == key.G:
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            pyglet.image.get_buffer_manager().get_color_buffer().save(str(snapshot_path))
-        elif symbol in action_keys:
-            active = True
-
-    @window.event
-    def on_mouse_press(_x: int, _y: int, button: int, _modifiers: int) -> None:
-        nonlocal active, mouse_captured
-        if button == mouse.LEFT:
-            mouse_captured = True
-            active = True
-            window.set_exclusive_mouse(True)
-
-    @window.event
-    def on_mouse_motion(_x: int, _y: int, dx: int, dy: int) -> None:
-        nonlocal pending_mouse_x, pending_mouse_y
-        if mouse_captured:
-            pending_mouse_x += dx
-            pending_mouse_y -= dy
-
-    def update(_delta_seconds: float) -> None:
-        nonlocal pending_mouse_x, pending_mouse_y, latest_action
-        if not active:
-            return
-        latest_action = make_live_action(
-            held_controls(),
-            mouse_dx=pending_mouse_x,
-            mouse_dy=pending_mouse_y,
-            camera_step=camera_step,
-        )
-        pending_mouse_x = 0.0
-        pending_mouse_y = 0.0
-        engine.step(latest_action)
-
-    pyglet.clock.schedule_interval(update, 1.0 / seed.model_fps)
-    try:
-        pyglet.app.run()
-    finally:
-        pyglet.clock.unschedule(update)
-        if mouse_captured:
-            window.set_exclusive_mouse(False)
-    return PlaygroundResult(
-        episode=seed.episode,
-        current_step=seed.current_step,
-        steps=engine.steps,
-        device=str(engine.device),
-    )
-
-
 def launch_playground(
     processed_dir: Path,
     manifest_path: Path | None,
@@ -505,6 +338,9 @@ def launch_playground(
     script: str | None = None,
     output_path: Path = Path("artifacts/interactive-rollout/scripted-rollout.png"),
     requested_device: str = "auto",
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = True,
 ) -> tuple[PlaygroundResult, int]:
     engine, seed, seed_count, _ = _load_playground(
         processed_dir,
@@ -518,5 +354,16 @@ def launch_playground(
         actions = parse_action_script(script, camera_step=camera_step)
         result = run_scripted_rollout(engine, seed, actions, output_path)
     else:
-        result = run_interactive_window(engine, seed, camera_step=camera_step)
+        from mcwm.frontend import serve_rollout_frontend
+
+        result = serve_rollout_frontend(
+            engine,
+            seed,
+            seed_index=sample_index,
+            seed_count=seed_count,
+            camera_step=camera_step,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+        )
     return result, seed_count

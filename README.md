@@ -43,9 +43,10 @@ Open the interactive rollout viewer using the selected V2 checkpoints:
 uv run mcwm play-rollout
 ```
 
-The viewer begins with two real held-out seed frames. After that, every image is
-recursively imagined from your controls. Hold a movement key and the model
-automatically advances at 10 Hz; no separate step or play command is required.
+The model initializes from two held-out seed frames, but the browser frontend
+shows only one large current viewport. Every later image is recursively imagined
+from your controls. Hold a movement key and the model automatically advances at
+10 Hz; no separate step or play command is required.
 See [Learning 07](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md) for the controls and
 scripted mode.
 

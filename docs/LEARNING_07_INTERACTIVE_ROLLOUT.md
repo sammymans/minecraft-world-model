@@ -63,19 +63,23 @@ The controls are:
 | `Shift` | sprint while held |
 | `Control` | sneak while held |
 | `Space` | jump while held |
-| `H/J/K/L` | look left/down/up/right while held |
-| left click | capture the mouse for relative camera control |
+| arrow keys | look left/down/up/right while held |
+| click the viewport | capture the mouse for relative camera control |
 | `Escape` | release the captured mouse |
-| `Tab` | pause or resume; starting this way produces an idle rollout |
-| `R` | reset to the original seed pair |
-| `G` | save the current viewer canvas |
-| `Q` | quit |
+| `P` or Pause button | pause or resume; starting this way produces an idle rollout |
+| `R` or Reset button | reset to the original seed pair |
+| Stop server button | stop the local model process |
 
-The lightweight Pyglet frontend reports both key presses and releases, so the
-controls behave normally. The viewer waits at the real seed until the first
-action key is pressed. It then advances automatically at the dataset's 10 Hz
-rate. Pyglet is used only for the live window; headless OpenCV remains in the
-video and dataset pipeline.
+The lightweight browser frontend reports both key presses and releases, so the
+controls behave normally. It shows only the current $64\times64$ frame enlarged
+inside one viewport; the two seed frames remain internal model state. The page
+waits at the real current seed until the first action key is pressed, then sends
+one action request every 100 ms.
+
+The page is vanilla HTML, CSS, and JavaScript served by Python's standard HTTP
+server on `127.0.0.1`. It requires no internet connection, frontend build,
+Node.js, React, WebSocket service, or external account. The Python process owns
+the model and returns one newly decoded PNG after each action.
 
 ## Run it
 
@@ -84,6 +88,10 @@ The V2 checkpoints and validation data are the defaults:
 ```bash
 uv run mcwm play-rollout
 ```
+
+The command opens `http://127.0.0.1:8765` automatically. Use `--no-open` if you
+want to open that address yourself. Stop it with the page button or `Ctrl-C` in
+the terminal.
 
 Choose another clean held-out starting point with:
 
@@ -159,7 +167,7 @@ with exactly the same interactive command rather than inventing a new demo.
 
 Use one seed and compare three runs, resetting with `R` between them:
 
-1. press `Tab` and let the idle model run for one second;
+1. click `Start idle` and let the idle model run for one second;
 2. reset, then hold `W` for one second; and
 3. reset, then hold `W` and `L` together for one second.
 
