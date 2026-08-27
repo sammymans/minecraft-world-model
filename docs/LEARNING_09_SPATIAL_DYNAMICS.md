@@ -180,19 +180,47 @@ fast-motion frames, and a sharpness measurement agrees with the eye:
 | warp only, no residual | 0.01710 |
 | full prediction | **0.01330** |
 
-The decoder is not the problem — the oracle sits at 97% of the real frame's
-edge energy. The prediction sits at 59%, and the loss splits about evenly
-between two causes. Bilinear resampling is itself mildly smoothing, which costs
-the warp 22%. The residual head costs another 22%, because squared error is
-minimized by the blurry average over every plausible next frame.
+The decoder is not the problem. The oracle sits at 97% of the real frame's edge
+energy, so handing the decoder a *real* latent gives a sharp image. The blur is
+already present in the latent the dynamics model produces, and the decoder
+renders it faithfully. Measuring cell-to-cell variation inside the latent map
+itself tracks the image almost one-to-one:
+
+| latent map | spatial detail | share of real |
+|---|---:|---:|
+| real next latent | 0.06074 | 100.0% |
+| current latent (the copy) | 0.06097 | 100.4% |
+| after warp, before residual | 0.04094 | 67.4% |
+| final prediction | 0.03577 | 58.9% |
+
+It is tempting to blame the warp for the 100% to 67% step, since bilinear
+resampling is a low-pass filter and a half-cell offset is its worst case. That
+reading is wrong. The no-warp ablation, which has no resampling anywhere,
+arrives at the same place:
+
+| model | pixel L1 | image sharpness | latent detail |
+|---|---:|---:|---:|
+| warp | 0.028623 | 61.0% of oracle | 58.9% of real |
+| no-warp | 0.029614 | 60.7% of oracle | 59.1% of real |
+
+Two structurally different models land within 0.3 points of each other. The
+architecture does not choose the sharpness — **the objective does**. Squared
+error is minimized by the average over every plausible next latent, and that
+average is spatially smooth. The warp reaches that average by resampling and
+the residual reaches it by convolution, but the loss picked the destination.
+
+This also predicts what will *not* help. More data makes the conditional mean
+more accurate; it does not stop it being a mean. The ablation ranked data above
+architecture for one-step error, and that still holds — but neither lever moves
+sharpness.
 
 The warp is genuinely doing work: warping alone, before the residual is added,
 already cuts latent MSE to 0.005397 from the copy baseline's 0.007160 — better
 than the 0.008344 that the parameter-free camera warp achieved. The learned
 mean displacement is 0.26 cells, matching the measured distribution.
 
-Given that the ablation put architecture behind data, the remaining blur is
-best attacked as a *loss* problem, so
+Since sharpness is set by the objective, the remaining blur has to be attacked
+in the loss, so
 `--edge-weight` adds the same image-gradient penalty the spatial autoencoder
 uses. It defaults to zero, which reproduces the numbers above. Note the scale:
 the normalized latent term is O(0.4) and the gradient term is O(0.005), so a
