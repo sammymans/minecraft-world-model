@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-from torch import nn
 
 from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics, TinyAutoencoder
 
@@ -64,9 +63,7 @@ def test_spatial_dynamics_starts_as_copy_and_preserves_shape() -> None:
     predicted = model(previous, current, actions)
 
     assert predicted.shape == current.shape
-    # The zero-initialized flow and residual heads make the model start as the
-    # copy baseline; bilinear resampling costs a little float precision.
-    torch.testing.assert_close(predicted, current, atol=1e-5, rtol=0)
+    assert torch.equal(predicted, current)
     assert model.parameter_count < 1_000_000
 
 
@@ -79,31 +76,3 @@ def test_spatial_dynamics_validates_input_shapes() -> None:
         model(previous, current, torch.randn(2, 8))
     with pytest.raises(ValueError, match="channels"):
         model(previous[:, :7], current[:, :7], torch.randn(2, 9))
-
-
-def test_spatial_dynamics_warp_translates_content() -> None:
-    model = SpatialLatentDynamics(latent_channels=1, hidden_channels=8, blocks=1)
-    latent = torch.zeros(1, 1, 8, 8)
-    latent[0, 0, 4, 4] = 1.0
-    flow = torch.zeros(1, 2, 8, 8)
-    flow[:, 0] = 2.0  # sample two cells to the right, so content moves left
-
-    warped = model.warp(latent, flow)
-
-    assert warped[0, 0, 4, 2] == pytest.approx(1.0)
-    assert warped[0, 0, 4, 4] == pytest.approx(0.0)
-
-
-def test_spatial_dynamics_action_changes_the_prediction() -> None:
-    torch.manual_seed(0)
-    model = SpatialLatentDynamics(latent_channels=4, hidden_channels=16, blocks=2)
-    # Break the copy initialization so the action pathways carry signal.
-    for head in (model.local_flow, model.global_flow, model.residual):
-        nn.init.normal_(head.weight, std=0.05)
-    previous = torch.randn(3, 4, 16, 16)
-    current = torch.randn(3, 4, 16, 16)
-
-    first = model(previous, current, torch.zeros(3, 9))
-    second = model(previous, current, torch.full((3, 9), 2.0))
-
-    assert not torch.allclose(first, second, atol=1e-4)

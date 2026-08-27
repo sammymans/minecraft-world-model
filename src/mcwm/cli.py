@@ -338,13 +338,6 @@ def build_parser() -> argparse.ArgumentParser:
     train_spatial_dynamics_parser.add_argument("--weight-decay", type=float, default=1e-5)
     train_spatial_dynamics_parser.add_argument("--latent-weight", type=float, default=1.0)
     train_spatial_dynamics_parser.add_argument("--pixel-weight", type=float, default=1.0)
-    train_spatial_dynamics_parser.add_argument(
-        "--edge-weight",
-        type=float,
-        default=0.0,
-        help="penalize blur via decoded image gradients; the latent term is O(0.4) "
-        "and this one O(0.005), so useful values are tens, not fractions",
-    )
     train_spatial_dynamics_parser.add_argument("--patience", type=int, default=5)
 
     evaluate_spatial_dynamics_parser = commands.add_parser(
@@ -769,7 +762,6 @@ def main(argv: list[str] | None = None) -> int:
             weight_decay=args.weight_decay,
             latent_weight=args.latent_weight,
             pixel_weight=args.pixel_weight,
-            edge_weight=args.edge_weight,
             patience=args.patience,
             seed=args.seed,
             requested_device=args.device,

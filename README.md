@@ -93,20 +93,16 @@ The 253,395-parameter spatial autoencoder reaches 37.46 dB, L1 0.00674, and a
 0.974 edge-energy ratio on the frozen held-out episodes, versus 28.27 dB and
 L1 0.02128 for the old flat-latent model.
 
-Spatial action-conditioned dynamics now exist and pass their acceptance gate. A
-260,390-parameter model trained on a bounded 30,000-transition pilot reaches
-0.003902 held-out latent MSE against a 0.007160 copy baseline, and 0.028623
-pixel L1 against 0.033883 for decoded copy. Shuffling the actions raises the
-error by 43% of the model's own error, so the controls are load-bearing rather
-than decorative.
+Spatial action-conditioned dynamics now exist and beat their baselines: 0.003941
+held-out latent MSE against a 0.007160 copy baseline, 0.029529 pixel L1 against
+0.033883 for decoded copy, and shuffled actions cost 37.6% of the model's own
+error. Measured on a 30,000-transition bounded pilot.
 
-Two honest caveats. An ablation at matched data scale shows the architecture
-changes are worth only 1-3%: **data scale, not architecture, drove the
-improvement**, and the pilot used 30,000 of 245,087 available transitions. And
-the prediction still carries only 59% of the real frame's edge energy, so blur
-is reduced rather than solved. See
-[Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
+Two caveats. An ablation at matched data scale showed **data scale, not
+architecture, drove the improvement**, and the pilot used 30,000 of 245,087
+available transitions. And the held-out split is a single player session, which
+is too narrow for fine-grained comparisons. Both point the same way: more data.
+See [Learning 09](docs/LEARNING_09_SPATIAL_DYNAMICS.md).
 
-The next steps are an on-disk latent cache to train past the in-memory bound,
-then the `--edge-weight` sharpness term, then recursive rollout, and only then
-reconnecting the browser frontend. The recorder remains last.
+The next step is the larger `vpt_v4` dataset, which also allows several
+independent held-out groups. The recorder remains last.

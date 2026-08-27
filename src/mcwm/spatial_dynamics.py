@@ -23,7 +23,7 @@ from mcwm.dynamics import (
     save_prediction_grid,
 )
 from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics
-from mcwm.spatial_training import image_gradients, load_spatial_autoencoder_checkpoint
+from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, seed_everything
 
 matplotlib.use("Agg")
@@ -213,43 +213,20 @@ def _prediction_loss(
     *,
     latent_weight: float,
     pixel_weight: float,
-    edge_weight: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Score one prediction against the decoder oracle, not the raw frame.
-
-    Comparing against `decode(target_latent)` keeps the dynamics model from
-    being charged for reconstruction error it cannot fix.
-
-    `edge_weight` penalizes the difference in image gradients, the same term the
-    spatial autoencoder uses. Squared error alone is minimized by the blurry
-    average of every plausible next frame, which is measurably what happens:
-    the pilot's decoded prediction carries 59% of the edge energy of the real
-    frame. Note that the normalized latent term is O(0.4) while the gradient
-    term is O(0.005), so a useful `edge_weight` is tens, not fractions.
-    """
     predicted = dynamics(
         batch["previous_latent"], batch["current_latent"], batch["action"]
     )
     normalized_error = (predicted - batch["target_latent"]) / dynamics.latent_std
     latent_loss = normalized_error.square().mean()
-    if pixel_weight or edge_weight:
+    if pixel_weight:
         predicted_frame = autoencoder.decode(predicted)
         with torch.no_grad():
             oracle_frame = autoencoder.decode(batch["target_latent"])
         pixel_loss = nn.functional.mse_loss(predicted_frame, oracle_frame)
-        if edge_weight:
-            predicted_dx, predicted_dy = image_gradients(predicted_frame)
-            oracle_dx, oracle_dy = image_gradients(oracle_frame)
-            edge_loss = 0.5 * (
-                nn.functional.l1_loss(predicted_dx, oracle_dx)
-                + nn.functional.l1_loss(predicted_dy, oracle_dy)
-            )
-        else:
-            edge_loss = latent_loss.new_zeros(())
     else:
         pixel_loss = latent_loss.new_zeros(())
-        edge_loss = latent_loss.new_zeros(())
-    total = latent_weight * latent_loss + pixel_weight * pixel_loss + edge_weight * edge_loss
+    total = latent_weight * latent_loss + pixel_weight * pixel_loss
     return total, latent_loss, pixel_loss
 
 
@@ -263,7 +240,6 @@ def _validation_objective(
     batch_size: int,
     latent_weight: float,
     pixel_weight: float,
-    edge_weight: float,
 ) -> tuple[float, float, float]:
     dynamics.eval()
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -277,7 +253,6 @@ def _validation_objective(
             batch,
             latent_weight=latent_weight,
             pixel_weight=pixel_weight,
-            edge_weight=edge_weight,
         )
         count = len(batch["action"])
         totals += np.array([float(loss) for loss in losses]) * count
@@ -295,7 +270,6 @@ def _save_checkpoint(
     manifest_path: Path,
     latent_weight: float,
     pixel_weight: float,
-    edge_weight: float = 0.0,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -310,7 +284,6 @@ def _save_checkpoint(
             "history": history,
             "latent_weight": latent_weight,
             "pixel_weight": pixel_weight,
-            "edge_weight": edge_weight,
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "autoencoder_sha256": autoencoder_sha256,
             "dataset_manifest": str(manifest_path),
@@ -377,17 +350,14 @@ def train_spatial_dynamics(
     weight_decay: float = 1e-5,
     latent_weight: float = 1.0,
     pixel_weight: float = 1.0,
-    edge_weight: float = 0.0,
     patience: int = 5,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> SpatialDynamicsTrainingResult:
     if min(epochs, batch_size, encode_batch_size, maximum_transitions, patience) < 1:
         raise ValueError("training sizes and patience must be positive")
-    if min(latent_weight, pixel_weight, edge_weight) < 0:
-        raise ValueError("loss weights must be non-negative")
-    if latent_weight + pixel_weight + edge_weight == 0:
-        raise ValueError("at least one loss weight must be positive")
+    if latent_weight < 0 or pixel_weight < 0 or latent_weight + pixel_weight == 0:
+        raise ValueError("loss weights must be non-negative and not both zero")
     seed_everything(seed)
     device = choose_device(requested_device)
     autoencoder_sha256 = _file_sha256(autoencoder_checkpoint)
@@ -457,7 +427,6 @@ def train_spatial_dynamics(
                 batch,
                 latent_weight=latent_weight,
                 pixel_weight=pixel_weight,
-                edge_weight=edge_weight,
             )
             loss.backward()
             optimizer.step()
@@ -473,7 +442,6 @@ def train_spatial_dynamics(
             batch_size=batch_size,
             latent_weight=latent_weight,
             pixel_weight=pixel_weight,
-            edge_weight=edge_weight,
         )
         history["train"].append(train_loss)
         history["validation"].append(validation_loss)
@@ -508,7 +476,6 @@ def train_spatial_dynamics(
         manifest_path=manifest_path,
         latent_weight=latent_weight,
         pixel_weight=pixel_weight,
-        edge_weight=edge_weight,
     )
     metrics = evaluate_dynamics(
         dynamics, autoencoder, validation, device, batch_size=batch_size, seed=seed

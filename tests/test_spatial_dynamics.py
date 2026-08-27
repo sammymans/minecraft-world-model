@@ -121,30 +121,3 @@ def test_spatial_dynamics_checkpoint_round_trip(tmp_path: Path) -> None:
     assert metadata["model_type"] == "spatial_latent_dynamics"
     for expected, actual in zip(dynamics.parameters(), loaded.parameters(), strict=True):
         assert torch.equal(expected, actual)
-
-
-def test_spatial_edge_weight_penalizes_blur(tmp_path: Path) -> None:
-    path = tmp_path / "episode.npz"
-    _write_episode(path)
-    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
-    autoencoder.requires_grad_(False)
-    dataset = SpatialEncodedDynamicsDataset.from_paths(
-        [path], autoencoder, torch.device("cpu"), maximum_transitions=2
-    )
-    batch = {
-        name: torch.stack([dataset[index][name] for index in range(2)])
-        for name in dataset[0]
-    }
-    dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
-
-    plain, latent, pixel = _prediction_loss(
-        dynamics, autoencoder, batch, latent_weight=1.0, pixel_weight=1.0
-    )
-    with_edges, _, _ = _prediction_loss(
-        dynamics, autoencoder, batch, latent_weight=1.0, pixel_weight=1.0, edge_weight=10.0
-    )
-
-    assert plain.item() == pytest.approx(latent.item() + pixel.item())
-    # The zero-initialized model predicts the copy, whose decoded gradients differ
-    # from the oracle's, so the edge term must add cost rather than vanish.
-    assert with_edges.item() > plain.item()
