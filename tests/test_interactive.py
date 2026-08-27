@@ -8,6 +8,7 @@ from torch import nn
 from mcwm.interactive import (
     ACTION_INDEX,
     InteractiveRolloutEngine,
+    RolloutSeed,
     make_action,
     make_live_action,
     parse_action_script,
@@ -30,6 +31,9 @@ class _MouseDynamics(nn.Module):
 
 
 class _GrayDecoder(nn.Module):
+    def encode(self, frames: torch.Tensor) -> torch.Tensor:
+        return frames.mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1)
+
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
         return latents[:, :, None, None].expand(-1, 3, 2, 2)
 
@@ -113,3 +117,22 @@ def test_interactive_engine_accepts_spatial_latents() -> None:
 
     assert frame.shape == (2, 2, 3)
     assert engine.current_latent.shape == (1, 3, 2, 2)
+
+
+def test_interactive_engine_reseeds_without_reloading_models() -> None:
+    engine = InteractiveRolloutEngine(
+        _GrayDecoder(),
+        _MouseDynamics(),
+        torch.tensor([[0.0]]),
+        torch.tensor([[0.0]]),
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        torch.device("cpu"),
+    )
+    engine.step(make_action(mouse_dx=0.5))
+    frame = np.full((2, 2, 3), 128, dtype=np.uint8)
+
+    result = engine.reseed(RolloutSeed("new", 4, 10, frame, frame))
+
+    assert engine.steps == 0
+    assert np.array_equal(result, frame)
+    assert engine.current_latent.item() == pytest.approx(128 / 255)

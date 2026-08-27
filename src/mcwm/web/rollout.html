@@ -17,7 +17,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
+      min-height: 100dvh;
       overflow: hidden;
       background:
         radial-gradient(circle at 50% -20%, #30442b 0, transparent 44%),
@@ -26,15 +26,15 @@
       font: 500 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     .app {
-      width: min(1120px, 100vw);
-      min-height: 100vh;
+      width: min(980px, 100%);
+      height: 100dvh;
       margin: 0 auto;
-      padding: 22px clamp(16px, 3vw, 40px) 18px;
+      padding: 14px clamp(12px, 2vw, 24px);
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
-      gap: 18px;
+      gap: 11px;
     }
-    header, footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .eyebrow { color: var(--green); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; }
     h1 { margin: 3px 0 0; font: 650 clamp(18px, 2.3vw, 28px)/1.1 system-ui, sans-serif; }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
@@ -49,6 +49,10 @@
     .badge.live { border-color: rgba(143, 208, 95, .5); color: var(--green); }
     .stage {
       min-height: 0;
+      width: min(100%, calc(100dvh - 164px));
+      max-height: 100%;
+      aspect-ratio: 1;
+      justify-self: center;
       position: relative;
       display: grid;
       place-items: center;
@@ -61,10 +65,10 @@
       outline: none;
     }
     #frame {
+      display: block;
       width: 100%;
       height: 100%;
-      max-height: calc(100vh - 180px);
-      object-fit: contain;
+      object-fit: cover;
       image-rendering: auto;
       user-select: none;
       -webkit-user-drag: none;
@@ -100,17 +104,27 @@
       color: var(--muted);
     }
     .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    footer { display: grid; gap: 7px; min-width: 0; }
+    .footer-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .divider { width: 1px; height: 24px; background: var(--line); margin: 0 2px; }
     button { cursor: pointer; transition: border-color .15s, background .15s; }
     button:hover { border-color: var(--green); background: var(--green-dark); }
     button.primary { background: var(--green); color: #10180d; border-color: var(--green); font-weight: 750; }
-    .meta { color: var(--muted); text-align: right; font-size: 12px; }
+    .meta {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     kbd { color: var(--ink); }
     @media (max-width: 700px) {
-      .app { padding: 12px; gap: 10px; }
-      header, footer { align-items: flex-start; flex-direction: column; }
+      body { overflow: auto; }
+      .app { height: auto; min-height: 100dvh; padding: 10px; gap: 9px; }
+      header { align-items: flex-start; flex-direction: column; }
       .badges { justify-content: flex-start; }
-      .meta { text-align: left; }
-      #frame { max-height: calc(100vh - 260px); }
+      .stage { width: 100%; }
+      .footer-main { align-items: flex-start; flex-direction: column; }
       .hint { flex-direction: column; }
     }
   </style>
@@ -139,10 +153,16 @@
     </main>
 
     <footer>
-      <div class="controls">
-        <button class="primary" id="pause">Start idle</button>
-        <button id="reset">Reset rollout</button>
-        <button id="capture">Capture mouse</button>
+      <div class="footer-main">
+        <div class="controls">
+          <button id="previous-seed">← Seed</button>
+          <button id="random-seed">Random</button>
+          <button id="next-seed">Seed →</button>
+          <span class="divider" aria-hidden="true"></span>
+          <button class="primary" id="pause">Start idle</button>
+          <button id="reset">Reset</button>
+          <button id="capture">Mouse</button>
+        </div>
         <button id="stop">Stop server</button>
       </div>
       <div class="meta" id="meta">Loading model state…</div>
@@ -164,6 +184,7 @@
     let mouseDy = 0;
     let frameUrl = null;
     let timer = null;
+    let info = null;
 
     const keyMap = {
       KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
@@ -178,6 +199,13 @@
       statusEl.textContent = running ? 'RUNNING' : 'PAUSED';
       statusEl.classList.toggle('live', running);
       pauseButton.textContent = running ? 'Pause' : 'Start idle';
+    }
+
+    function showInfo(value) {
+      info = value;
+      metaEl.textContent = `seed ${info.seed_index + 1} of ${info.seed_count} · ` +
+        `${info.episode} · frame ${info.seed_step} · ${info.device}`;
+      metaEl.title = metaEl.textContent;
     }
 
     function showFrame(blob, response) {
@@ -218,6 +246,32 @@
       }
     }
 
+    async function selectSeed(index) {
+      if (pending || !info) return;
+      pending = true;
+      setRunning(false);
+      held.clear();
+      mouseDx = mouseDy = 0;
+      statusEl.textContent = 'LOADING';
+      try {
+        const response = await fetch('/api/seed', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({index})
+        });
+        if (!response.ok) throw new Error(await response.text());
+        showInfo(await response.json());
+        await getFrame('/api/frame');
+        actionEl.textContent = 'IDLE';
+        statusEl.textContent = 'READY';
+      } catch (error) {
+        statusEl.textContent = 'ERROR';
+        console.error(error);
+      } finally {
+        pending = false;
+      }
+    }
+
     window.addEventListener('keydown', event => {
       const control = keyMap[event.code];
       if (control) {
@@ -244,11 +298,27 @@
     });
     document.addEventListener('pointerlockchange', () => {
       document.querySelector('#capture').textContent =
-        document.pointerLockElement === stage ? 'Mouse captured' : 'Capture mouse';
+        document.pointerLockElement === stage ? 'Mouse on' : 'Mouse';
     });
     stage.addEventListener('click', () => stage.requestPointerLock());
     document.querySelector('#capture').addEventListener('click', () => stage.requestPointerLock());
     pauseButton.addEventListener('click', () => setRunning(!running));
+    document.querySelector('#previous-seed').addEventListener('click', () => {
+      if (!info) return;
+      const jump = Math.max(1, Math.floor(info.seed_count / 100));
+      selectSeed((info.seed_index - jump + info.seed_count) % info.seed_count);
+    });
+    document.querySelector('#next-seed').addEventListener('click', () => {
+      if (!info) return;
+      const jump = Math.max(1, Math.floor(info.seed_count / 100));
+      selectSeed((info.seed_index + jump) % info.seed_count);
+    });
+    document.querySelector('#random-seed').addEventListener('click', () => {
+      if (!info || info.seed_count < 2) return;
+      let index = Math.floor(Math.random() * info.seed_count);
+      if (index === info.seed_index) index = (index + 1) % info.seed_count;
+      selectSeed(index);
+    });
     document.querySelector('#reset').addEventListener('click', async () => {
       setRunning(false);
       held.clear();
@@ -264,9 +334,7 @@
     });
 
     async function initialize() {
-      const info = await fetch('/api/info').then(response => response.json());
-      metaEl.textContent = `seed ${info.seed_index}/${info.seed_count - 1} · ` +
-        `${info.episode} · step ${info.seed_step} · ${info.device}`;
+      showInfo(await fetch('/api/info').then(response => response.json()));
       await getFrame('/api/frame');
       timer = setInterval(tick, 1000 / info.model_fps);
       statusEl.textContent = 'READY';

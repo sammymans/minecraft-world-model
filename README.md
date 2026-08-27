@@ -39,7 +39,7 @@ Measured scaling results are tracked in
 
 ## Play the world model
 
-Open the interactive rollout viewer using the reproducible V1 checkpoints:
+Open the interactive rollout viewer using the selected spatial checkpoints:
 
 ```bash
 uv run mcwm play-rollout
@@ -48,7 +48,8 @@ uv run mcwm play-rollout
 The model initializes from two held-out seed frames, but the browser frontend
 shows only one large current viewport. Every later image is recursively imagined
 from your controls. Hold a movement key and the model automatically advances at
-10 Hz; no separate step or play command is required.
+10 Hz; no separate step or play command is required. Use the seed buttons to
+jump to another held-out Minecraft scene without restarting the model.
 See [Learning 07](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md) for the controls and
 scripted mode.
 

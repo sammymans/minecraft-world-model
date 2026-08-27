@@ -135,6 +135,9 @@ Launch the selected checkpoint in the browser with:
 uv run mcwm play-rollout --sample-index 20000
 ```
 
+Previous, random, and next-seed buttons replace both real seed frames and reset
+the imagined trajectory while keeping the checkpoints loaded.
+
 `--maximum-transitions` bounds the in-memory training latent cache. The next
 infrastructure refinement should be a simple on-disk latent cache before trying
 to consume all 398,354 eight-step V4 training sequences.

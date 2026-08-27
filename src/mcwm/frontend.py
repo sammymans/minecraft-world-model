@@ -6,6 +6,7 @@ import json
 import math
 import threading
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +50,7 @@ class WebRolloutController:
         *,
         seed_index: int,
         seed_count: int,
+        seed_loader: Callable[[int], RolloutSeed] | None = None,
         camera_step: float,
     ) -> None:
         if camera_step <= 0:
@@ -57,6 +59,7 @@ class WebRolloutController:
         self.seed = seed
         self.seed_index = seed_index
         self.seed_count = seed_count
+        self.seed_loader = seed_loader
         self.camera_step = camera_step
         self.lock = threading.Lock()
 
@@ -86,6 +89,18 @@ class WebRolloutController:
         with self.lock:
             frame = self.engine.reset()
             return self._png(frame), self.engine.steps
+
+    def select_seed(self, index: int) -> FrontendInfo:
+        if self.seed_loader is None:
+            raise ValueError("seed switching is unavailable")
+        if not 0 <= index < self.seed_count:
+            raise ValueError(f"seed index must be between 0 and {self.seed_count - 1}")
+        with self.lock:
+            seed = self.seed_loader(index)
+            self.engine.reseed(seed)
+            self.seed = seed
+            self.seed_index = index
+            return self.info
 
     def step(self, payload: dict[str, Any]) -> tuple[bytes, int, str]:
         raw_controls = payload.get("controls", [])
@@ -167,6 +182,15 @@ def _handler(controller: WebRolloutController) -> type[BaseHTTPRequestHandler]:
                 headers["X-Rollout-Action"] = action
             self._send(frame, "image/png", headers=headers)
 
+        def _request_json(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 16_384:
+                raise ValueError("request body is too large")
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("request body must be a JSON object")
+            return payload
+
         def do_GET(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             if path == "/":
@@ -182,15 +206,16 @@ def _handler(controller: WebRolloutController) -> type[BaseHTTPRequestHandler]:
             path = urlsplit(self.path).path
             try:
                 if path == "/api/step":
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length > 16_384:
-                        raise ValueError("request body is too large")
-                    payload = json.loads(self.rfile.read(length) or b"{}")
-                    if not isinstance(payload, dict):
-                        raise ValueError("request body must be a JSON object")
-                    self._frame(*controller.step(payload))
+                    self._frame(*controller.step(self._request_json()))
                 elif path == "/api/reset":
                     self._frame(*controller.reset())
+                elif path == "/api/seed":
+                    payload = self._request_json()
+                    try:
+                        index = int(payload["index"])
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise ValueError("seed index must be an integer") from error
+                    self._json(controller.select_seed(index).__dict__)
                 elif path == "/api/stop":
                     self._json({"stopping": True})
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -208,6 +233,7 @@ def serve_rollout_frontend(
     *,
     seed_index: int,
     seed_count: int,
+    seed_loader: Callable[[int], RolloutSeed],
     camera_step: float,
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -219,6 +245,7 @@ def serve_rollout_frontend(
         seed,
         seed_index=seed_index,
         seed_count=seed_count,
+        seed_loader=seed_loader,
         camera_step=camera_step,
     )
     server = ThreadingHTTPServer((host, port), _handler(controller))
@@ -236,8 +263,8 @@ def serve_rollout_frontend(
     finally:
         server.server_close()
     return PlaygroundResult(
-        episode=seed.episode,
-        current_step=seed.current_step,
+        episode=controller.seed.episode,
+        current_step=controller.seed.current_step,
         steps=engine.steps,
         device=str(engine.device),
     )

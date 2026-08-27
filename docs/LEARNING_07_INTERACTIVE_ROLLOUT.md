@@ -38,8 +38,8 @@ $$
 m_t=z_t-z_{t-1}.
 $$
 
-The two seeds initialize that motion context. This is why the window displays
-`real seed t-1`, `real seed t`, and the current imagined frame separately.
+The two seeds initialize that motion context. They stay internal; the browser
+shows only the current real or imagined frame.
 
 ## Action representation
 
@@ -68,6 +68,7 @@ The controls are:
 | `Escape` | release the captured mouse |
 | `P` or Pause button | pause or resume; starting this way produces an idle rollout |
 | `R` or Reset button | reset to the original seed pair |
+| previous/random/next seed | choose a different held-out scene and reset the rollout |
 | Stop server button | stop the local model process |
 
 The lightweight browser frontend reports both key presses and releases, so the
@@ -83,7 +84,7 @@ the model and returns one newly decoded PNG after each action.
 
 ## Run it
 
-The V2 checkpoints and validation data are the defaults:
+The selected spatial checkpoints and broad V4 validation data are the defaults:
 
 ```bash
 uv run mcwm play-rollout
@@ -93,14 +94,15 @@ The command opens `http://127.0.0.1:8765` automatically. Use `--no-open` if you
 want to open that address yourself. Stop it with the page button or `Ctrl-C` in
 the terminal.
 
-Choose another clean held-out starting point with:
+Choose an exact clean held-out starting point with:
 
 ```bash
-uv run mcwm play-rollout --sample-index 359
+uv run mcwm play-rollout --sample-index 20000
 ```
 
-There are currently 1,034 clean held-out seed transitions. The command prints
-the selected episode and exact step so a run is reproducible.
+There are currently 65,073 clean held-out seed transitions. The page can switch
+seeds without restarting or reloading the checkpoints. The command prints the
+selected episode and exact step so a run is reproducible.
 
 ## Scripted mode
 
@@ -128,40 +130,25 @@ Supported scripted camera tokens are `look_left`, `look_right`, `look_up`, and
 Scripted mode is useful for debugging because the exact counterfactual action
 sequence can be repeated after every new checkpoint.
 
-## What the first result means
+## What the current result means
 
-The verified scripted run successfully:
+The selected spatial model beats frozen copy at every measured recursive
+horizon through 20 steps. On final-test windows, mismatched actions are 22.9%
+worse at step 20, proving that live controls enter a learned action path rather
+than a decorative UI path.
 
-1. loaded the paired autoencoder and dynamics checkpoints;
-2. selected a clean held-out seed;
-3. encoded only the two real seed frames;
-4. applied 20 user-specified actions recursively; and
-5. decoded and saved every imagined latent.
-
-A same-seed counterfactual check after ten recursive steps measured:
-
-| branches compared | latent MSE between branches | pixel MSE between branches |
-|---|---:|---:|
-| idle versus forward + sprint | 0.003150 | 0.002044 |
-| forward + sprint versus forward + sprint + turn | 0.008827 | 0.004800 |
-
-The nonzero differences prove that live actions reach the model and alter its
-imagined state. Whether each difference looks like the intended Minecraft
-motion is still a qualitative model-quality question, which is why the live
-viewer remains useful.
-
-The rollout remains stable, but it is visibly blurred and changes less than an
-actual Minecraft video would. This agrees with the recursive evaluation: the
-model has learned useful average dynamics, but it tends to predict conservative
-futures and loses sharp details.
+The rollout still becomes smooth after several recursive steps. This agrees
+with the offline evaluation: the model has learned useful average dynamics, but
+a deterministic squared-error predictor loses sharp details as uncertainty
+accumulates.
 
 The important distinction is:
 
 - **software success:** the interactive closed loop works correctly;
 - **model quality:** action responses are currently subtle and blurry.
 
-More data may improve the second point. The V3 experiment can now be evaluated
-with exactly the same interactive command rather than inventing a new demo.
+Seed switching makes it easy to check that conclusion across many different
+Minecraft scenes with the same loaded model.
 
 ## A useful manual experiment
 
@@ -169,7 +156,7 @@ Use one seed and compare three runs, resetting with `R` between them:
 
 1. click `Start idle` and let the idle model run for one second;
 2. reset, then hold `W` for one second; and
-3. reset, then hold `W` and `L` together for one second.
+3. reset, then hold `W` and the right arrow together for one second.
 
 If all three imagined futures are identical, the model is ignoring our action.
 If they differ slightly but plausibly, the action-conditioning path works. If

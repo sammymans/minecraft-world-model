@@ -372,8 +372,8 @@ futures without reading new frames from Minecraft.
 Status: complete with the spatial checkpoint. The local web frontend accepts
 held movement keys and pointer-lock camera controls, shows only the current
 imagined view, and runs the spatial dynamics model recursively at 10 Hz. Its
-HTTP step path and scripted mode are both verified. Longer interaction still
-exposes the deterministic model's gradual blur.
+HTTP step path, live seed switching, and scripted mode are verified. Longer
+interaction still exposes the deterministic model's gradual blur.
 
 ### Milestone 7 — recorder replacement
 

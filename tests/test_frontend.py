@@ -28,6 +28,9 @@ class _MouseDynamics(nn.Module):
 
 
 class _GrayDecoder(nn.Module):
+    def encode(self, frames: torch.Tensor) -> torch.Tensor:
+        return frames.mean(dim=(1, 2, 3), keepdim=False).unsqueeze(1)
+
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
         return latents[:, :, None, None].expand(-1, 3, 2, 2)
 
@@ -43,11 +46,17 @@ def _controller() -> WebRolloutController:
         torch.device("cpu"),
     )
     seed = RolloutSeed("web-test", 12, 10, frame, frame)
+
+    def seed_loader(index: int) -> RolloutSeed:
+        value = np.full((2, 2, 3), index, dtype=np.uint8)
+        return RolloutSeed(f"web-test-{index}", index, 10, value, value)
+
     return WebRolloutController(
         engine,
         seed,
         seed_index=3,
         seed_count=9,
+        seed_loader=seed_loader,
         camera_step=30,
     )
 
@@ -61,6 +70,18 @@ def test_web_controller_steps_and_resets_the_recursive_engine() -> None:
     assert "mouse +30" in action
     _, reset_step = controller.reset()
     assert reset_step == 0
+
+
+def test_web_controller_switches_seed_and_resets_rollout() -> None:
+    controller = _controller()
+    controller.step({"controls": ["look_right"]})
+
+    info = controller.select_seed(7)
+
+    assert info.seed_index == 7
+    assert info.episode == "web-test-7"
+    assert controller.engine.steps == 0
+    assert np.all(controller.engine.current_frame == 7)
 
 
 def test_local_frontend_serves_single_view_and_model_endpoints() -> None:
@@ -84,6 +105,17 @@ def test_local_frontend_serves_single_view_and_model_endpoints() -> None:
         with urlopen(request, timeout=2) as response:  # noqa: S310
             assert response.headers["X-Rollout-Step"] == "1"
             assert response.read().startswith(b"\x89PNG")
+
+        seed_request = Request(  # noqa: S310
+            f"{base}/api/seed",
+            data=json.dumps({"index": 5}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(seed_request, timeout=2) as response:  # noqa: S310
+            info = json.loads(response.read())
+        assert info["seed_index"] == 5
+        assert info["episode"] == "web-test-5"
     finally:
         server.shutdown()
         server.server_close()

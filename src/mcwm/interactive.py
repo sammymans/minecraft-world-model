@@ -63,6 +63,38 @@ class PlaygroundResult:
     output: Path | None = None
 
 
+class RolloutSeedBank:
+    """Reusable held-out seeds for switching scenes without reloading the model."""
+
+    def __init__(self, dataset: SequenceDataset):
+        if not len(dataset):
+            raise ValueError("validation data has no clean rollout seeds")
+        self.dataset = dataset
+
+    @classmethod
+    def load(
+        cls, processed_dir: Path, manifest_path: Path | None
+    ) -> RolloutSeedBank:
+        _, validation_paths = _processed_splits(processed_dir, manifest_path)
+        return cls(SequenceDataset.from_paths(validation_paths, horizon=1))
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def get(self, index: int) -> RolloutSeed:
+        if not 0 <= index < len(self):
+            raise ValueError(f"sample_index must be between 0 and {len(self) - 1}")
+        episode_index, current_step = self.dataset.index[index]
+        episode = self.dataset.episodes[episode_index]
+        return RolloutSeed(
+            episode=episode.episode,
+            current_step=current_step,
+            model_fps=episode.model_fps,
+            previous_frame=episode.frames[current_step - 1].copy(),
+            current_frame=episode.frames[current_step].copy(),
+        )
+
+
 def make_action(
     controls: Iterable[str] = (),
     *,
@@ -137,24 +169,8 @@ def select_rollout_seed(
     sample_index: int,
 ) -> tuple[RolloutSeed, int]:
     """Choose two frames from a clean held-out transition."""
-    _, validation_paths = _processed_splits(processed_dir, manifest_path)
-    dataset = SequenceDataset.from_paths(validation_paths, horizon=1)
-    if not len(dataset):
-        raise ValueError("validation data has no clean rollout seeds")
-    if not 0 <= sample_index < len(dataset):
-        raise ValueError(f"sample_index must be between 0 and {len(dataset) - 1}")
-    episode_index, current_step = dataset.index[sample_index]
-    episode = dataset.episodes[episode_index]
-    return (
-        RolloutSeed(
-            episode=episode.episode,
-            current_step=current_step,
-            model_fps=episode.model_fps,
-            previous_frame=episode.frames[current_step - 1].copy(),
-            current_frame=episode.frames[current_step].copy(),
-        ),
-        len(dataset),
-    )
+    seeds = RolloutSeedBank.load(processed_dir, manifest_path)
+    return seeds.get(sample_index), len(seeds)
 
 
 class InteractiveRolloutEngine:
@@ -242,6 +258,20 @@ class InteractiveRolloutEngine:
         self.steps = 0
         return self.current_frame.copy()
 
+    @torch.no_grad()
+    def reseed(self, seed: RolloutSeed) -> np.ndarray:
+        """Replace both real seed frames while keeping the loaded models."""
+        frames = np.stack((seed.previous_frame, seed.current_frame))
+        contiguous = np.ascontiguousarray(frames.transpose(0, 3, 1, 2))
+        tensor = torch.from_numpy(contiguous).to(
+            device=self.device, dtype=torch.float32
+        ).div_(255)
+        latents = self.autoencoder.encode(tensor)
+        self.seed_previous = latents[0:1].detach().clone()
+        self.seed_current = latents[1:2].detach().clone()
+        self.seed_frame = seed.current_frame.copy()
+        return self.reset()
+
 
 def _load_playground(
     processed_dir: Path,
@@ -250,7 +280,7 @@ def _load_playground(
     dynamics_checkpoint: Path,
     sample_index: int,
     requested_device: str,
-) -> tuple[InteractiveRolloutEngine, RolloutSeed, int, torch.device]:
+) -> tuple[InteractiveRolloutEngine, RolloutSeed, RolloutSeedBank, torch.device]:
     device = choose_device(requested_device)
     checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
     if checkpoint.get("model_type") == "spatial_latent_dynamics":
@@ -273,9 +303,10 @@ def _load_playground(
         if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
             raise ValueError("autoencoder and dynamics latent dimensions do not match")
     autoencoder.requires_grad_(False)
-    seed, seed_count = select_rollout_seed(processed_dir, manifest_path, sample_index)
+    seeds = RolloutSeedBank.load(processed_dir, manifest_path)
+    seed = seeds.get(sample_index)
     engine = InteractiveRolloutEngine.from_seed(autoencoder, dynamics, seed, device)
-    return engine, seed, seed_count, device
+    return engine, seed, seeds, device
 
 
 def _action_label(action: np.ndarray) -> str:
@@ -374,7 +405,7 @@ def launch_playground(
     port: int = 8765,
     open_browser: bool = True,
 ) -> tuple[PlaygroundResult, int]:
-    engine, seed, seed_count, _ = _load_playground(
+    engine, seed, seeds, _ = _load_playground(
         processed_dir,
         manifest_path,
         autoencoder_checkpoint,
@@ -392,10 +423,11 @@ def launch_playground(
             engine,
             seed,
             seed_index=sample_index,
-            seed_count=seed_count,
+            seed_count=len(seeds),
+            seed_loader=seeds.get,
             camera_step=camera_step,
             host=host,
             port=port,
             open_browser=open_browser,
         )
-    return result, seed_count
+    return result, len(seeds)
