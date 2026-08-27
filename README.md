@@ -29,6 +29,10 @@ lessons are:
 3. [Visual autoencoder](docs/LEARNING_03_AUTOENCODER.md)
 4. [Local dataset pipeline](docs/LEARNING_04_LOCAL_DATA_PIPELINE.md)
 5. [Action-conditioned latent dynamics](docs/LEARNING_05_LATENT_DYNAMICS.md)
+6. [Multi-step recursive evaluation](docs/LEARNING_06_MULTI_STEP_EVALUATION.md)
+
+Measured scaling results are tracked in
+[docs/RESULTS_DATA_SCALING.md](docs/RESULTS_DATA_SCALING.md).
 
 ## Reproduce the local dataset
 

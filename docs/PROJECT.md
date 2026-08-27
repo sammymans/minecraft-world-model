@@ -290,11 +290,10 @@ Deliverables:
 Completion test: one command shows a batch with shapes and an ordered visual
 sequence whose actions make sense.
 
-Status: complete. Dataset `vpt_v1` contains 14 public episodes from 12
-independent sessions, processed into 10 Hz, $64\times64$ canonical episodes. An
-explicit manifest assigns 11 groups to training and freezes one group for
-validation. This produces 5,605 training sequences and 618 held-out sequences
-at an eight-step prediction horizon.
+Status: complete. Dataset `vpt_v2` contains 173 public episodes from 171
+independent sessions, processed into 10 Hz, $64\times64$ canonical episodes. It
+provides 148,069 clean one-step examples and 117,348 eight-step training
+sequences while preserving the original frozen validation group.
 
 ### Milestone 3 — visual autoencoder
 
@@ -309,10 +308,9 @@ Completion test: held-out reconstructions are recognizable enough that we can
 identify the scene and camera direction.
 
 Status: complete. A 1,396,835-parameter convolutional autoencoder compresses
-each $64\times64$ RGB frame from 12,288 pixel values to 256 latent values. Its
-best held-out checkpoint reached MSE $0.00213$, L1 $0.02517$, and PSNR $26.72$
-dB. A 512-latent experiment improved L1 by only about 2%, so the smaller state
-was retained for action-conditioned dynamics.
+each $64\times64$ RGB frame from 12,288 pixel values to 256 latent values. The
+larger-data checkpoint reaches held-out MSE $0.00149$, L1 $0.02128$, and PSNR
+$28.27$ dB without increasing the latent size.
 
 ### Milestone 4 — latent dynamics
 
@@ -327,10 +325,11 @@ Deliverables:
 Completion test: predictions on held-out sequences change with the supplied
 action, and shuffling actions makes prediction worse.
 
-Status: implementation ready. The frozen-checkpoint training path, one-step
-metrics, copy baseline, shuffled-action control, validation curves, and visual
-comparisons are implemented. Final training and completion measurements wait
-for a dedicated run against the selected 256-feature autoencoder checkpoint.
+Status: complete. On the unchanged held-out session, the selected model beats
+decoded copy by 17.0%, and shuffling actions worsens pixel MSE by 26.9%. The
+controlled old-encoder experiment improves from a 0.2% to a 24.0% latent
+shuffled-action penalty when dynamics data grows from 7,314 to 148,069 clean
+examples.
 
 ### Milestone 5 — open-loop evaluation
 
@@ -343,6 +342,9 @@ Deliverables:
 
 Completion test: the model beats the copy-frame baseline for at least a short
 horizon and produces visually interpretable rollouts.
+
+Status: next. The precise recursive protocol, baselines, expected artifacts,
+and completion gate are specified in `LEARNING_06_MULTI_STEP_EVALUATION.md`.
 
 ### Milestone 6 — interactive rollout
 

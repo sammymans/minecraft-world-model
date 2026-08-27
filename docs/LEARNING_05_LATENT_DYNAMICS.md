@@ -197,3 +197,8 @@ $$
 
 We will measure horizons of 1, 2, 5, 10, and 20 steps before building the
 keyboard-controlled viewer.
+
+The complete experiment table is maintained in
+[`RESULTS_DATA_SCALING.md`](RESULTS_DATA_SCALING.md). The recursive protocol and
+expected failure modes are explained in
+[`LEARNING_06_MULTI_STEP_EVALUATION.md`](LEARNING_06_MULTI_STEP_EVALUATION.md).

@@ -14,6 +14,11 @@
 - [Learning 05: latent dynamics](LEARNING_05_LATENT_DYNAMICS.md) — frozen visual
   latents, action-conditioned residual prediction, one-step losses, baselines,
   and the shuffled-action test.
+- [Data-scaling results](RESULTS_DATA_SCALING.md) — the committed experiment
+  table, comparison rules, checkpoint pairings, and protocol for larger data.
+- [Learning 06: multi-step evaluation](LEARNING_06_MULTI_STEP_EVALUATION.md) —
+  recursive open-loop prediction, error growth, baselines, failure modes, and
+  the gate before interaction.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.
