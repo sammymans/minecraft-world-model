@@ -960,12 +960,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"device:        {result.device}")
         print(f"examples:      {result.example_count:,}")
         print(f"max horizon:   {result.max_horizon} steps")
-        print("horizon  recursive MSE  copy gain  action penalty  beats copy")
+        print(
+            "horizon  recursive MSE  copy gain  action penalty  edge ratio  beats copy"
+        )
         for metrics in result.horizons:
             print(
                 f"{metrics.horizon:7d}  {metrics.recursive_pixel_mse:13.6f}  "
                 f"{metrics.copy_improvement_percent:8.1f}%  "
                 f"{metrics.shuffled_action_pixel_penalty_percent:12.1f}%  "
+                f"{metrics.recursive_edge_ratio:10.3f}  "
                 f"{str(metrics.beats_copy_pixel):>10s}"
             )
         print(f"curve:         {result.error_curve}")

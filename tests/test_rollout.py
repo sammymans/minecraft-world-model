@@ -150,6 +150,8 @@ def test_metrics_payload_normalizes_numpy_scalars_for_json() -> None:
         shuffled_action_latent_mse=0.2,
         shuffled_action_pixel_mse=np.float64(0.3),
         action_effect_latent_mse=0.1,
+        recursive_edge_ratio=0.6,
+        oracle_edge_ratio=np.float64(0.97),
     )
 
     payload = _metrics_payload(metrics)

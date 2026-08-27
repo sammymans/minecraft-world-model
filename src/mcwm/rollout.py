@@ -32,7 +32,7 @@ from mcwm.spatial_dynamics import (
     SpatialEncodedDynamicsDataset,
     load_spatial_dynamics_checkpoint,
 )
-from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
+from mcwm.spatial_training import image_gradients, load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
 
 matplotlib.use("Agg")
@@ -59,6 +59,8 @@ class RolloutHorizonMetrics:
     shuffled_action_latent_mse: float
     shuffled_action_pixel_mse: float
     action_effect_latent_mse: float
+    recursive_edge_ratio: float
+    oracle_edge_ratio: float
 
     @property
     def beats_copy_pixel(self) -> bool:
@@ -262,6 +264,9 @@ def evaluate_rollouts(
         "shuffled_latent_squared",
         "shuffled_pixel_squared",
         "action_effect_squared",
+        "recursive_edge_energy",
+        "oracle_edge_energy",
+        "target_edge_energy",
     )
     sums = {name: np.zeros(dataset.horizon, dtype=np.float64) for name in names}
     examples = 0
@@ -329,6 +334,17 @@ def evaluate_rollouts(
             sums["action_effect_squared"][step] += torch.square(
                 predicted[:, step] - shuffled_predicted[:, step]
             ).sum().item()
+            # Squared error rewards blur, so track how much edge energy each
+            # prediction actually carries relative to the real frame.
+            for name, image in (
+                ("recursive_edge_energy", predicted_frame),
+                ("oracle_edge_energy", oracle_frame),
+                ("target_edge_energy", target_frame),
+            ):
+                horizontal, vertical = image_gradients(image)
+                sums[name][step] += (
+                    horizontal.abs().sum().item() + vertical.abs().sum().item()
+                )
 
         examples += count
         latent_values += predicted[:, 0].numel()
@@ -363,6 +379,10 @@ def evaluate_rollouts(
                 / pixel_values,
                 action_effect_latent_mse=sums["action_effect_squared"][step]
                 / latent_values,
+                recursive_edge_ratio=sums["recursive_edge_energy"][step]
+                / max(sums["target_edge_energy"][step], 1e-12),
+                oracle_edge_ratio=sums["oracle_edge_energy"][step]
+                / max(sums["target_edge_energy"][step], 1e-12),
             )
         )
     return tuple(results)
