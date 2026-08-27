@@ -24,6 +24,10 @@ from mcwm.manifest import (
 )
 from mcwm.preview import create_preview, inspect_episode
 from mcwm.rollout import evaluate_saved_rollouts
+from mcwm.spatial_dynamics import (
+    evaluate_saved_spatial_dynamics,
+    train_spatial_dynamics,
+)
 from mcwm.spatial_training import (
     evaluate_saved_spatial_autoencoder,
     sanity_overfit_spatial_autoencoder,
@@ -70,6 +74,20 @@ def _add_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
         default=Path("artifacts/autoencoder/best.pt"),
     )
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--encode-batch-size", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
+
+
+def _add_spatial_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v3"))
+    parser.add_argument("--manifest", type=Path, default=Path("data/manifests/vpt_v3.jsonl"))
+    parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--encode-batch-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
@@ -298,6 +316,51 @@ def build_parser() -> argparse.ArgumentParser:
         "--split", choices=("training", "validation"), default="validation"
     )
     evaluate_dynamics_parser.add_argument("--count", type=int, default=6)
+
+    train_spatial_dynamics_parser = commands.add_parser(
+        "train-spatial-dynamics",
+        help="train one-step action-conditioned dynamics on spatial latent maps",
+    )
+    _add_spatial_dynamics_data_arguments(train_spatial_dynamics_parser)
+    train_spatial_dynamics_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v3")
+    )
+    train_spatial_dynamics_parser.add_argument("--epochs", type=int, default=20)
+    train_spatial_dynamics_parser.add_argument(
+        "--maximum-transitions",
+        type=int,
+        default=30_000,
+        help="bounded in-memory latent cache; keeps the pilot within a few GiB of RAM",
+    )
+    train_spatial_dynamics_parser.add_argument("--hidden-channels", type=int, default=64)
+    train_spatial_dynamics_parser.add_argument("--blocks", type=int, default=3)
+    train_spatial_dynamics_parser.add_argument("--learning-rate", type=float, default=3e-4)
+    train_spatial_dynamics_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    train_spatial_dynamics_parser.add_argument("--latent-weight", type=float, default=1.0)
+    train_spatial_dynamics_parser.add_argument("--pixel-weight", type=float, default=1.0)
+    train_spatial_dynamics_parser.add_argument(
+        "--edge-weight",
+        type=float,
+        default=0.0,
+        help="penalize blur via decoded image gradients; the latent term is O(0.4) "
+        "and this one O(0.005), so useful values are tens, not fractions",
+    )
+    train_spatial_dynamics_parser.add_argument("--patience", type=int, default=5)
+
+    evaluate_spatial_dynamics_parser = commands.add_parser(
+        "evaluate-spatial-dynamics",
+        help="evaluate a saved spatial dynamics checkpoint against its baselines",
+    )
+    _add_spatial_dynamics_data_arguments(evaluate_spatial_dynamics_parser)
+    evaluate_spatial_dynamics_parser.add_argument(
+        "--dynamics-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-dynamics-v3/best.pt"),
+    )
+    evaluate_spatial_dynamics_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-dynamics-v3-eval")
+    )
+    evaluate_spatial_dynamics_parser.add_argument("--count", type=int, default=6)
 
     evaluate_rollout_parser = commands.add_parser(
         "evaluate-rollout", help="measure recursive latent prediction over several horizons"
@@ -688,6 +751,76 @@ def main(argv: list[str] | None = None) -> int:
             f"{metrics.shuffled_action_degradation:+.6f}"
         )
         print(f"visual:                    {result.comparison_grid}")
+        return 0
+
+    if args.command == "train-spatial-dynamics":
+        result = train_spatial_dynamics(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            maximum_transitions=args.maximum_transitions,
+            hidden_channels=args.hidden_channels,
+            blocks=args.blocks,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            latent_weight=args.latent_weight,
+            pixel_weight=args.pixel_weight,
+            edge_weight=args.edge_weight,
+            patience=args.patience,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        validation = result.validation_metrics
+        print(f"device:                      {result.device}")
+        print(f"latent shape:                {result.latent_shape}")
+        print(f"dynamics parameters:         {result.parameter_count:,}")
+        print(f"training transitions:        {result.training_transitions:,}")
+        print(f"encoded training frames:     {result.encoded_frames:,}")
+        print(f"validation latent MSE:       {validation.latent_mse:.6f}")
+        print(f"copy baseline latent MSE:    {validation.copy_latent_mse:.6f}")
+        print(f"validation pixel L1:         {validation.pixel_l1:.6f}")
+        print(f"decoded-copy pixel L1:       {validation.decoded_copy_pixel_l1:.6f}")
+        print(f"decoder-oracle pixel L1:     {validation.oracle_pixel_l1:.6f}")
+        print(
+            "shuffled-action degradation: "
+            f"{validation.shuffled_action_degradation:+.6f}"
+        )
+        print(f"checkpoint:                  {result.checkpoint}")
+        print(f"visual:                      {result.comparison_grid}")
+        return 0
+
+    if args.command == "evaluate-spatial-dynamics":
+        result = evaluate_saved_spatial_dynamics(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.dynamics_checkpoint,
+            args.output_dir,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            count=args.count,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        metrics = result.metrics
+        print(f"device:                      {result.device}")
+        print(f"transitions:                 {result.transitions:,}")
+        print(f"latent shape:                {result.latent_shape}")
+        print(f"latent MSE:                  {metrics.latent_mse:.6f}")
+        print(f"copy baseline latent MSE:    {metrics.copy_latent_mse:.6f}")
+        print(f"pixel L1:                    {metrics.pixel_l1:.6f}")
+        print(f"decoded-copy pixel L1:       {metrics.decoded_copy_pixel_l1:.6f}")
+        print(f"decoder-oracle pixel L1:     {metrics.oracle_pixel_l1:.6f}")
+        print(f"pixel PSNR:                  {metrics.pixel_psnr_db:.2f} dB")
+        print(
+            "shuffled-action degradation: "
+            f"{metrics.shuffled_action_degradation:+.6f}"
+        )
+        print(f"visual:                      {result.comparison_grid}")
         return 0
 
     if args.command == "evaluate-rollout":
