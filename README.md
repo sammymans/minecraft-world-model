@@ -44,7 +44,8 @@ uv run mcwm play-rollout
 ```
 
 The viewer begins with two real held-out seed frames. After that, every image is
-recursively imagined from your controls; press `N` for one step or `P` to run.
+recursively imagined from your controls. Hold a movement key and the model
+automatically advances at 10 Hz; no separate step or play command is required.
 See [Learning 07](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md) for the controls and
 scripted mode.
 

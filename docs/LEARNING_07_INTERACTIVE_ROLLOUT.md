@@ -50,30 +50,32 @@ a_t=[W,A,S,D,\text{jump},\text{sprint},\text{sneak},
 \Delta x_{mouse},\Delta y_{mouse}].
 $$
 
-The first seven controls are toggles. They remain active at every 10 Hz model
-step until toggled off. Camera movement is accumulated and then consumed once,
-matching a mouse delta over one transition.
+Held keys are sampled at every 10 Hz model step. Pressing `W` therefore sends
+`W=1` and advances the world automatically for as long as the key remains down;
+releasing it sends `W=0`. Camera movement is accumulated and consumed once per
+step, matching a mouse delta over one transition.
 
 The controls are:
 
 | key | effect |
 |---|---|
-| `W/A/S/D` | toggle a movement direction |
-| `E` | toggle sprint |
-| `C` | toggle sneak |
-| `Space` | toggle jump |
-| `H/J/K/L` | add look left/down/up/right to the next step |
-| left-mouse drag | add a raw camera delta to the next step |
-| `N` | imagine exactly one step |
-| `P` | start or pause continuous 10 Hz imagination |
-| `X` | clear all active controls |
+| `W/A/S/D` | hold a movement direction |
+| `Shift` | sprint while held |
+| `Control` | sneak while held |
+| `Space` | jump while held |
+| `H/J/K/L` | look left/down/up/right while held |
+| left click | capture the mouse for relative camera control |
+| `Escape` | release the captured mouse |
+| `Tab` | pause or resume; starting this way produces an idle rollout |
 | `R` | reset to the original seed pair |
 | `G` | save the current viewer canvas |
 | `Q` | quit |
 
-Movement uses toggles because OpenCV's small cross-platform window reliably
-reports key presses but not key-release state. Starting paused and pressing `N`
-is the easiest way to see exactly which action produces each prediction.
+The lightweight Pyglet frontend reports both key presses and releases, so the
+controls behave normally. The viewer waits at the real seed until the first
+action key is pressed. It then advances automatically at the dataset's 10 Hz
+rate. Pyglet is used only for the live window; headless OpenCV remains in the
+video and dataset pipeline.
 
 ## Run it
 
@@ -86,7 +88,7 @@ uv run mcwm play-rollout
 Choose another clean held-out starting point with:
 
 ```bash
-uv run mcwm play-rollout --sample-index 143
+uv run mcwm play-rollout --sample-index 359
 ```
 
 There are currently 1,034 clean held-out seed transitions. The command prints
@@ -157,9 +159,9 @@ with exactly the same interactive command rather than inventing a new demo.
 
 Use one seed and compare three runs, resetting with `R` between them:
 
-1. idle for ten single steps;
-2. toggle `W`, then take ten single steps; and
-3. toggle `W`, add `L` before each step, then take ten steps.
+1. press `Tab` and let the idle model run for one second;
+2. reset, then hold `W` for one second; and
+3. reset, then hold `W` and `L` together for one second.
 
 If all three imagined futures are identical, the model is ignoring our action.
 If they differ slightly but plausibly, the action-conditioning path works. If

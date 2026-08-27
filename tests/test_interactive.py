@@ -8,8 +8,8 @@ from torch import nn
 from mcwm.interactive import (
     ACTION_INDEX,
     InteractiveRolloutEngine,
-    LiveActionState,
     make_action,
+    make_live_action,
     parse_action_script,
 )
 
@@ -39,18 +39,15 @@ def test_make_action_uses_canonical_training_order() -> None:
     assert action.tolist() == [1, 0, 0, 0, 1, 0, 1, 12, -4]
 
 
-def test_live_action_state_persists_keys_but_consumes_camera_once() -> None:
-    state = LiveActionState()
-    state.toggle("w")
-    state.add_camera(8, -3)
+def test_realtime_action_uses_held_keys_and_relative_camera() -> None:
+    action = make_live_action(
+        {"w", "sprint", "look_right"},
+        mouse_dx=8,
+        mouse_dy=-3,
+        camera_step=30,
+    )
 
-    first = state.consume()
-    second = state.consume()
-
-    assert first.tolist() == [1, 0, 0, 0, 0, 0, 0, 8, -3]
-    assert second.tolist() == [1, 0, 0, 0, 0, 0, 0, 0, 0]
-    assert state.toggle("w") is False
-    assert state.consume().sum() == 0
+    assert action.tolist() == [1, 0, 0, 0, 0, 1, 0, 38, -3]
 
 
 def test_script_parses_repetition_and_camera_actions() -> None:

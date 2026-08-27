@@ -70,48 +70,6 @@ def make_action(
     return action
 
 
-class LiveActionState:
-    """Persistent key toggles plus camera movement consumed once per model step."""
-
-    def __init__(self) -> None:
-        self.held: set[str] = set()
-        self.mouse_dx = 0.0
-        self.mouse_dy = 0.0
-
-    def toggle(self, control: str) -> bool:
-        if control not in BINARY_ACTIONS:
-            raise ValueError(f"unknown binary control: {control}")
-        if control in self.held:
-            self.held.remove(control)
-            return False
-        self.held.add(control)
-        return True
-
-    def add_camera(self, dx: float, dy: float) -> None:
-        self.mouse_dx += dx
-        self.mouse_dy += dy
-
-    def clear(self) -> None:
-        self.held.clear()
-        self.mouse_dx = 0.0
-        self.mouse_dy = 0.0
-
-    def consume(self) -> np.ndarray:
-        action = make_action(
-            self.held,
-            mouse_dx=self.mouse_dx,
-            mouse_dy=self.mouse_dy,
-        )
-        self.mouse_dx = 0.0
-        self.mouse_dy = 0.0
-        return action
-
-    def label(self) -> str:
-        ordered = [name.upper() for name in BINARY_ACTIONS if name in self.held]
-        keys = "+".join(ordered) if ordered else "IDLE"
-        return f"{keys}  mouse pending=({self.mouse_dx:+.0f}, {self.mouse_dy:+.0f})"
-
-
 def _parse_action_spec(spec: str, camera_step: float) -> np.ndarray:
     controls: set[str] = set()
     mouse_dx = 0.0
@@ -354,53 +312,19 @@ def run_scripted_rollout(
     )
 
 
-def _enlarge(frame: np.ndarray, size: int = 320) -> np.ndarray:
-    return cv2.resize(frame, (size, size), interpolation=cv2.INTER_NEAREST)
-
-
-def _viewer_canvas(
-    seed: RolloutSeed,
-    engine: InteractiveRolloutEngine,
-    actions: LiveActionState,
+def make_live_action(
+    held: Iterable[str],
     *,
-    running: bool,
+    mouse_dx: float,
+    mouse_dy: float,
+    camera_step: float,
 ) -> np.ndarray:
-    panels = [seed.previous_frame, seed.current_frame, engine.current_frame]
-    labels = ("real seed t-1", "real seed t", f"imagined t+{engine.steps}")
-    canvas = np.full((440, 1000, 3), 22, dtype=np.uint8)
-    for index, (frame, label) in enumerate(zip(panels, labels, strict=True)):
-        x = 10 + index * 330
-        bgr = cv2.cvtColor(_enlarge(frame), cv2.COLOR_RGB2BGR)
-        canvas[42:362, x : x + 320] = bgr
-        cv2.putText(
-            canvas,
-            label,
-            (x, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
-            (240, 240, 240),
-            1,
-            cv2.LINE_AA,
-        )
-    status = "RUNNING" if running else "PAUSED"
-    lines = (
-        f"{status} | step {engine.steps} ({engine.steps / seed.model_fps:.1f}s) | "
-        f"{actions.label()}",
-        "Toggle W/A/S/D, E sprint, C sneak, SPACE jump | H/J/K/L look | drag mouse",
-        "P run/pause | N single step | X clear controls | R reset | G snapshot | Q quit",
-    )
-    for index, line in enumerate(lines):
-        cv2.putText(
-            canvas,
-            line,
-            (12, 382 + index * 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (225, 225, 225),
-            1,
-            cv2.LINE_AA,
-        )
-    return canvas
+    """Convert held semantic controls into one model action."""
+    held = set(held)
+    controls = held.intersection(BINARY_ACTIONS)
+    mouse_dx += camera_step * (float("look_right" in held) - float("look_left" in held))
+    mouse_dy += camera_step * (float("look_down" in held) - float("look_up" in held))
+    return make_action(controls, mouse_dx=mouse_dx, mouse_dy=mouse_dy)
 
 
 def run_interactive_window(
@@ -410,86 +334,158 @@ def run_interactive_window(
     camera_step: float = 30.0,
     snapshot_path: Path = Path("artifacts/interactive-rollout/snapshot.png"),
 ) -> PlaygroundResult:
-    """Open the local recursive playground; movement keys are intentional toggles."""
+    """Open a real-time held-key playground backed by the recursive model."""
     if camera_step <= 0:
         raise ValueError("camera_step must be positive")
-    window = "Minecraft latent world model"
-    actions = LiveActionState()
-    running = False
-    last_mouse: tuple[int, int] | None = None
-
-    def on_mouse(event: int, x: int, y: int, flags: int, _parameter: object) -> None:
-        nonlocal last_mouse
-        if event == cv2.EVENT_LBUTTONDOWN:
-            last_mouse = (x, y)
-        elif event == cv2.EVENT_MOUSEMOVE and flags & cv2.EVENT_FLAG_LBUTTON:
-            if last_mouse is not None:
-                actions.add_camera(x - last_mouse[0], y - last_mouse[1])
-            last_mouse = (x, y)
-        elif event == cv2.EVENT_LBUTTONUP:
-            last_mouse = None
+    import pyglet
+    from pyglet.window import key, mouse
 
     try:
-        cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
-        cv2.setMouseCallback(window, on_mouse)
-    except cv2.error as error:
+        window = pyglet.window.Window(1000, 460, caption="Minecraft latent world model")
+    except Exception as error:
         raise RuntimeError(
-            "OpenCV could not create a GUI window; use --script for headless mode"
+            "Pyglet could not create a GUI window; use --script for headless mode"
         ) from error
+    pressed = key.KeyStateHandler()
+    window.push_handlers(pressed)
+    active = False
+    mouse_captured = False
+    pending_mouse_x = 0.0
+    pending_mouse_y = 0.0
+    latest_action = make_action()
+    action_keys = {
+        key.W,
+        key.A,
+        key.S,
+        key.D,
+        key.SPACE,
+        key.LSHIFT,
+        key.RSHIFT,
+        key.LCTRL,
+        key.RCTRL,
+        key.H,
+        key.J,
+        key.K,
+        key.L,
+    }
 
-    delay_ms = max(1, round(1000 / seed.model_fps))
+    def held_controls() -> set[str]:
+        controls: set[str] = set()
+        for name, symbol in (
+            ("w", key.W),
+            ("a", key.A),
+            ("s", key.S),
+            ("d", key.D),
+            ("jump", key.SPACE),
+            ("look_left", key.H),
+            ("look_down", key.J),
+            ("look_up", key.K),
+            ("look_right", key.L),
+        ):
+            if pressed[symbol]:
+                controls.add(name)
+        if pressed[key.LSHIFT] or pressed[key.RSHIFT]:
+            controls.add("sprint")
+        if pressed[key.LCTRL] or pressed[key.RCTRL]:
+            controls.add("sneak")
+        return controls
+
+    def image(frame: np.ndarray) -> pyglet.image.ImageData:
+        height, width = frame.shape[:2]
+        return pyglet.image.ImageData(
+            width,
+            height,
+            "RGB",
+            np.ascontiguousarray(frame).tobytes(),
+            pitch=-width * 3,
+        )
+
+    def label(text: str, x: int, y: int, size: int = 13) -> None:
+        pyglet.text.Label(
+            text,
+            x=x,
+            y=y,
+            font_size=size,
+            color=(235, 235, 235, 255),
+        ).draw()
+
+    @window.event
+    def on_draw() -> None:
+        window.clear()
+        panels = (seed.previous_frame, seed.current_frame, engine.current_frame)
+        labels = ("real seed t-1", "real seed t", f"imagined t+{engine.steps}")
+        for index, (frame, panel_label) in enumerate(zip(panels, labels, strict=True)):
+            x = 10 + index * 330
+            label(panel_label, x, 434, 14)
+            image(frame).blit(x, 98, width=320, height=320)
+        status = "RUNNING" if active else "READY / PAUSED"
+        capture = "captured" if mouse_captured else "free"
+        lines = (
+            f"{status} | step {engine.steps} ({engine.steps / seed.model_fps:.1f}s) | "
+            f"{_action_label(latest_action)} | mouse {capture}",
+            "Hold W/A/S/D, SHIFT sprint, CTRL sneak, SPACE jump | H/J/K/L look",
+            "Click to capture mouse | ESC release | TAB pause | R reset | G snapshot | Q quit",
+        )
+        for index, line in enumerate(lines):
+            label(line, 12, 70 - index * 25, 11)
+
+    @window.event
+    def on_key_press(symbol: int, _modifiers: int) -> None:
+        nonlocal active, mouse_captured, pending_mouse_x, pending_mouse_y
+        if symbol == key.Q:
+            window.close()
+        elif symbol == key.ESCAPE and mouse_captured:
+            mouse_captured = False
+            window.set_exclusive_mouse(False)
+        elif symbol == key.TAB:
+            active = not active
+        elif symbol == key.R:
+            active = False
+            pending_mouse_x = 0.0
+            pending_mouse_y = 0.0
+            engine.reset()
+        elif symbol == key.G:
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            pyglet.image.get_buffer_manager().get_color_buffer().save(str(snapshot_path))
+        elif symbol in action_keys:
+            active = True
+
+    @window.event
+    def on_mouse_press(_x: int, _y: int, button: int, _modifiers: int) -> None:
+        nonlocal active, mouse_captured
+        if button == mouse.LEFT:
+            mouse_captured = True
+            active = True
+            window.set_exclusive_mouse(True)
+
+    @window.event
+    def on_mouse_motion(_x: int, _y: int, dx: int, dy: int) -> None:
+        nonlocal pending_mouse_x, pending_mouse_y
+        if mouse_captured:
+            pending_mouse_x += dx
+            pending_mouse_y -= dy
+
+    def update(_delta_seconds: float) -> None:
+        nonlocal pending_mouse_x, pending_mouse_y, latest_action
+        if not active:
+            return
+        latest_action = make_live_action(
+            held_controls(),
+            mouse_dx=pending_mouse_x,
+            mouse_dy=pending_mouse_y,
+            camera_step=camera_step,
+        )
+        pending_mouse_x = 0.0
+        pending_mouse_y = 0.0
+        engine.step(latest_action)
+
+    pyglet.clock.schedule_interval(update, 1.0 / seed.model_fps)
     try:
-        while True:
-            cv2.imshow(window, _viewer_canvas(seed, engine, actions, running=running))
-            key = cv2.waitKeyEx(delay_ms if running else 40)
-            if key >= 0:
-                character = chr(key & 0xFF).lower()
-                if character == "q":
-                    break
-                if character in {"w", "a", "s", "d"}:
-                    actions.toggle(character)
-                elif character == "e":
-                    actions.toggle("sprint")
-                elif character == "c":
-                    actions.toggle("sneak")
-                elif character == " ":
-                    actions.toggle("jump")
-                elif character == "h":
-                    actions.add_camera(-camera_step, 0)
-                elif character == "l":
-                    actions.add_camera(camera_step, 0)
-                elif character == "k":
-                    actions.add_camera(0, -camera_step)
-                elif character == "j":
-                    actions.add_camera(0, camera_step)
-                elif character == "p":
-                    running = not running
-                elif character == "n":
-                    engine.step(actions.consume())
-                elif character == "x":
-                    actions.clear()
-                elif character == "r":
-                    engine.reset()
-                    actions.clear()
-                    running = False
-                elif character == "g":
-                    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(
-                        str(snapshot_path),
-                        _viewer_canvas(seed, engine, actions, running=running),
-                    )
-            if running:
-                engine.step(actions.consume())
-            try:
-                if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-                    break
-            except cv2.error:
-                break
+        pyglet.app.run()
     finally:
-        try:
-            cv2.destroyWindow(window)
-        except cv2.error:
-            pass
+        pyglet.clock.unschedule(update)
+        if mouse_captured:
+            window.set_exclusive_mouse(False)
     return PlaygroundResult(
         episode=seed.episode,
         current_step=seed.current_step,

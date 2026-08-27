@@ -200,7 +200,8 @@ two real seed frames
 ```
 
 No new Minecraft frame is shown after the seed. Every displayed future frame
-comes from the model. A small local window, likely using Pygame, is sufficient.
+comes from the model. A small local Pyglet window is sufficient; it provides
+held-key and relative-mouse input without adding a browser or server.
 
 The rollout will eventually drift or blur. That is expected. We want to see how
 long the model remains coherent, how its predictions respond to controls, and
