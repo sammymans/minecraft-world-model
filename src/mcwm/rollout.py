@@ -28,12 +28,11 @@ from mcwm.model import (
     SpatialLatentDynamics,
     TinyAutoencoder,
 )
-from mcwm.spatial_diffusion import SampledDynamics, load_spatial_diffusion_checkpoint
 from mcwm.spatial_dynamics import (
     SpatialEncodedDynamicsDataset,
     load_spatial_dynamics_checkpoint,
 )
-from mcwm.spatial_training import image_gradients, load_spatial_autoencoder_checkpoint
+from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
 
 matplotlib.use("Agg")
@@ -60,9 +59,6 @@ class RolloutHorizonMetrics:
     shuffled_action_latent_mse: float
     shuffled_action_pixel_mse: float
     action_effect_latent_mse: float
-    recursive_edge_ratio: float
-    oracle_edge_ratio: float
-    recursive_gradient_cosine: float = 0.0
 
     @property
     def beats_copy_pixel(self) -> bool:
@@ -199,13 +195,6 @@ def recursive_latent_rollout(
     return torch.stack(predictions, dim=1)
 
 
-def _reset_sampling(dynamics: Dynamics, seed: int) -> None:
-    """Reset stochastic dynamics when available, leaving deterministic models alone."""
-    reset = getattr(dynamics, "reset_sampling", None)
-    if callable(reset):
-        reset(seed)
-
-
 def _psnr(mse: float) -> float:
     return 10.0 * math.log10(1.0 / max(mse, 1e-12))
 
@@ -273,12 +262,6 @@ def evaluate_rollouts(
         "shuffled_latent_squared",
         "shuffled_pixel_squared",
         "action_effect_squared",
-        "recursive_edge_energy",
-        "oracle_edge_energy",
-        "target_edge_energy",
-        "gradient_dot",
-        "predicted_gradient_squared",
-        "target_gradient_squared",
     )
     sums = {name: np.zeros(dataset.horizon, dtype=np.float64) for name in names}
     examples = 0
@@ -294,14 +277,9 @@ def evaluate_rollouts(
         shuffled = mismatched_actions[offset : offset + count].to(device)
         offset += count
 
-        # Correct and mismatched controls must see identical diffusion noise;
-        # otherwise their difference measures sampling variance instead of actions.
-        rollout_seed = seed + examples * (dataset.horizon + 1)
-        _reset_sampling(dynamics, rollout_seed)
         predicted = recursive_latent_rollout(
             dynamics, latents[:, 0], latents[:, 1], actions
         )
-        _reset_sampling(dynamics, rollout_seed)
         shuffled_predicted = recursive_latent_rollout(
             dynamics, latents[:, 0], latents[:, 1], shuffled
         )
@@ -310,7 +288,6 @@ def evaluate_rollouts(
         for step in range(dataset.horizon):
             target_latent = latents[:, step + 2]
             target_frame = frames[:, step + 2]
-            _reset_sampling(dynamics, rollout_seed + dataset.horizon + step + 1)
             teacher_latent = dynamics(
                 latents[:, step], latents[:, step + 1], actions[:, step]
             )
@@ -352,31 +329,6 @@ def evaluate_rollouts(
             sums["action_effect_squared"][step] += torch.square(
                 predicted[:, step] - shuffled_predicted[:, step]
             ).sum().item()
-            # Squared error rewards blur, so track how much edge energy each
-            # prediction actually carries relative to the real frame.
-            for name, image in (
-                ("recursive_edge_energy", predicted_frame),
-                ("oracle_edge_energy", oracle_frame),
-                ("target_edge_energy", target_frame),
-            ):
-                horizontal, vertical = image_gradients(image)
-                sums[name][step] += (
-                    horizontal.abs().sum().item() + vertical.abs().sum().item()
-                )
-            predicted_horizontal, predicted_vertical = image_gradients(predicted_frame)
-            target_horizontal, target_vertical = image_gradients(target_frame)
-            sums["gradient_dot"][step] += (
-                (predicted_horizontal * target_horizontal).sum().item()
-                + (predicted_vertical * target_vertical).sum().item()
-            )
-            sums["predicted_gradient_squared"][step] += (
-                predicted_horizontal.square().sum().item()
-                + predicted_vertical.square().sum().item()
-            )
-            sums["target_gradient_squared"][step] += (
-                target_horizontal.square().sum().item()
-                + target_vertical.square().sum().item()
-            )
 
         examples += count
         latent_values += predicted[:, 0].numel()
@@ -411,19 +363,6 @@ def evaluate_rollouts(
                 / pixel_values,
                 action_effect_latent_mse=sums["action_effect_squared"][step]
                 / latent_values,
-                recursive_edge_ratio=sums["recursive_edge_energy"][step]
-                / max(sums["target_edge_energy"][step], 1e-12),
-                oracle_edge_ratio=sums["oracle_edge_energy"][step]
-                / max(sums["target_edge_energy"][step], 1e-12),
-                recursive_gradient_cosine=sums["gradient_dot"][step]
-                / max(
-                    (
-                        sums["predicted_gradient_squared"][step]
-                        * sums["target_gradient_squared"][step]
-                    )
-                    ** 0.5,
-                    1e-12,
-                ),
             )
         )
     return tuple(results)
@@ -600,7 +539,6 @@ def evaluate_saved_rollouts(
     count: int = 3,
     maximum_examples: int = 5_000,
     split: DatasetSplit = "validation",
-    sampling_steps: int | None = None,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> RolloutEvaluationResult:
@@ -609,23 +547,8 @@ def evaluate_saved_rollouts(
         raise ValueError("rollout evaluation split must be validation or test")
     device = choose_device(requested_device)
     checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    diffusion = checkpoint.get("model_type") == "spatial_latent_diffusion"
-    spatial = diffusion or checkpoint.get("model_type") == "spatial_latent_dynamics"
-    if diffusion:
-        sampler, dynamics_metadata = load_spatial_diffusion_checkpoint(
-            dynamics_checkpoint, device
-        )
-        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
-            autoencoder_checkpoint
-        ):
-            raise ValueError("spatial diffusion belongs to a different autoencoder checkpoint")
-        dynamics = SampledDynamics(
-            sampler, sampling_steps=sampling_steps or int(dynamics_metadata["sampling_steps"])
-        )
-        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-        if autoencoder.latent_channels != dynamics.latent_channels:
-            raise ValueError("autoencoder and dynamics latent channels do not match")
-    elif spatial:
+    spatial = checkpoint.get("model_type") == "spatial_latent_dynamics"
+    if spatial:
         dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
             dynamics_checkpoint, device
         )

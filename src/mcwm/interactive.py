@@ -23,7 +23,6 @@ from mcwm.model import (
     SpatialLatentDynamics,
     TinyAutoencoder,
 )
-from mcwm.spatial_diffusion import SampledDynamics, load_spatial_diffusion_checkpoint
 from mcwm.spatial_dynamics import load_spatial_dynamics_checkpoint
 from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
@@ -253,9 +252,6 @@ class InteractiveRolloutEngine:
         return frame.copy()
 
     def reset(self) -> np.ndarray:
-        reset_sampling = getattr(self.dynamics, "reset_sampling", None)
-        if callable(reset_sampling):
-            reset_sampling()
         self.previous_latent = self.seed_previous.clone()
         self.current_latent = self.seed_current.clone()
         self.current_frame = self.seed_frame.copy()
@@ -287,21 +283,7 @@ def _load_playground(
 ) -> tuple[InteractiveRolloutEngine, RolloutSeed, RolloutSeedBank, torch.device]:
     device = choose_device(requested_device)
     checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    if checkpoint.get("model_type") == "spatial_latent_diffusion":
-        sampler, dynamics_metadata = load_spatial_diffusion_checkpoint(
-            dynamics_checkpoint, device
-        )
-        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
-            autoencoder_checkpoint
-        ):
-            raise ValueError("spatial diffusion belongs to a different autoencoder checkpoint")
-        dynamics = SampledDynamics(
-            sampler, sampling_steps=int(dynamics_metadata["sampling_steps"])
-        )
-        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-        if autoencoder.latent_channels != dynamics.latent_channels:
-            raise ValueError("autoencoder and dynamics latent channels do not match")
-    elif checkpoint.get("model_type") == "spatial_latent_dynamics":
+    if checkpoint.get("model_type") == "spatial_latent_dynamics":
         dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
             dynamics_checkpoint, device
         )
