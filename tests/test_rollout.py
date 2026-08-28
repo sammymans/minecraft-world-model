@@ -8,7 +8,7 @@ import torch
 from torch import nn
 
 from mcwm.dataset import ProcessedEpisode
-from mcwm.model import LatentDynamics
+from mcwm.model import SpatialLatentDynamics
 from mcwm.rollout import (
     EncodedRolloutDataset,
     RolloutHorizonMetrics,
@@ -35,7 +35,8 @@ def _episode() -> ProcessedEpisode:
 
 
 def _latents(episode: ProcessedEpisode) -> torch.Tensor:
-    return torch.from_numpy(episode.frames[:, 0, 0].copy()).to(torch.float32).div(255)
+    frames = np.ascontiguousarray(episode.frames.transpose(0, 3, 1, 2))
+    return torch.from_numpy(frames).to(torch.float32).div(255)
 
 
 class _AddAction(nn.Module):
@@ -51,7 +52,7 @@ class _AddAction(nn.Module):
 
 class _ColorDecoder(nn.Module):
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
-        return latents[:, :, None, None].expand(-1, -1, 2, 2)
+        return latents
 
 
 def test_rollout_dataset_preserves_full_temporal_alignment() -> None:
@@ -78,9 +79,7 @@ def test_rollout_dataset_rejects_empty_sample_budget() -> None:
     episode = _episode()
 
     with pytest.raises(ValueError, match="maximum_examples must be positive"):
-        EncodedRolloutDataset(
-            [episode], [_latents(episode)], horizon=2, maximum_examples=0
-        )
+        EncodedRolloutDataset([episode], [_latents(episode)], horizon=2, maximum_examples=0)
 
 
 def test_recursive_rollout_feeds_predictions_back_without_future_latents() -> None:
@@ -113,7 +112,7 @@ def test_recursive_rollout_preserves_spatial_latent_shape() -> None:
 def test_copy_dynamics_matches_recursive_copy_baseline() -> None:
     episode = _episode()
     dataset = EncodedRolloutDataset([episode], [_latents(episode)], horizon=3)
-    dynamics = LatentDynamics(latent_dim=3, hidden_dim=8)
+    dynamics = SpatialLatentDynamics(latent_channels=3, hidden_channels=8, blocks=1)
 
     metrics = evaluate_rollouts(
         dynamics,

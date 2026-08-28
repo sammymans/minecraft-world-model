@@ -15,31 +15,20 @@ from torch.utils.data import DataLoader, Dataset
 
 from mcwm.dataset import ProcessedEpisode, SequenceDataset
 from mcwm.dynamics import (
-    EncodedDynamicsDataset,
     _file_sha256,
     _processed_splits,
-    _verify_autoencoder,
-    load_dynamics_checkpoint,
 )
 from mcwm.manifest import DatasetManifest, DatasetSplit
-from mcwm.model import (
-    LatentDynamics,
-    SpatialAutoencoder,
-    SpatialLatentDynamics,
-    TinyAutoencoder,
-)
+from mcwm.model import SpatialAutoencoder, SpatialLatentDynamics
 from mcwm.spatial_dynamics import (
     SpatialEncodedDynamicsDataset,
     load_spatial_dynamics_checkpoint,
 )
 from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
-from mcwm.training import choose_device, load_autoencoder_checkpoint
+from mcwm.training import choose_device
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt  # noqa: E402
-
-Autoencoder = TinyAutoencoder | SpatialAutoencoder
-Dynamics = LatentDynamics | SpatialLatentDynamics
 
 
 @dataclass(frozen=True)
@@ -70,9 +59,7 @@ class RolloutHorizonMetrics:
 
     @property
     def shuffled_action_pixel_penalty_percent(self) -> float:
-        return 100.0 * (
-            self.shuffled_action_pixel_mse / self.recursive_pixel_mse - 1.0
-        )
+        return 100.0 * (self.shuffled_action_pixel_mse / self.recursive_pixel_mse - 1.0)
 
 
 @dataclass(frozen=True)
@@ -110,10 +97,8 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
         if len(episodes) != len(latents):
             raise ValueError("each episode needs one latent timeline")
         for episode, episode_latents in zip(episodes, latents, strict=True):
-            if episode_latents.ndim not in {2, 4} or len(episode_latents) != len(
-                episode.frames
-            ):
-                raise ValueError("latent timelines must be flat or spatial with a time axis")
+            if episode_latents.ndim != 4 or len(episode_latents) != len(episode.frames):
+                raise ValueError("latent timelines must be spatial with a time axis")
         latent_shapes = {tuple(values.shape[1:]) for values in latents}
         if len(latent_shapes) != 1:
             raise ValueError("all latent timelines must use the same shape")
@@ -128,33 +113,6 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
             self.index = [self.index[int(item)] for item in selected]
         self.latent_shape = latent_shapes.pop()
 
-    @classmethod
-    @torch.no_grad()
-    def from_paths(
-        cls,
-        paths: list[Path],
-        autoencoder: TinyAutoencoder,
-        device: torch.device,
-        *,
-        horizon: int,
-        encode_batch_size: int = 128,
-        maximum_examples: int | None = None,
-        seed: int = 7,
-    ) -> EncodedRolloutDataset:
-        encoded = EncodedDynamicsDataset.from_paths(
-            paths,
-            autoencoder,
-            device,
-            encode_batch_size=encode_batch_size,
-        )
-        return cls(
-            encoded.episodes,
-            encoded.latents,
-            horizon=horizon,
-            maximum_examples=maximum_examples,
-            seed=seed,
-        )
-
     def __len__(self) -> int:
         return len(self.index)
 
@@ -164,9 +122,7 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
         stop = current_index + self.horizon
         return {
             "latents": self.latents[episode_index][current_index - 1 : stop + 1].float(),
-            "frames": _frame_timeline(
-                episode.frames[current_index - 1 : stop + 1]
-            ),
+            "frames": _frame_timeline(episode.frames[current_index - 1 : stop + 1]),
             "actions": torch.from_numpy(
                 episode.actions[current_index:stop].astype(np.float32, copy=False)
             ),
@@ -175,7 +131,7 @@ class EncodedRolloutDataset(Dataset[dict[str, torch.Tensor]]):
 
 @torch.no_grad()
 def recursive_latent_rollout(
-    dynamics: Dynamics,
+    dynamics: SpatialLatentDynamics,
     previous_latent: torch.Tensor,
     current_latent: torch.Tensor,
     actions: torch.Tensor,
@@ -222,8 +178,8 @@ def _metrics_payload(metrics: RolloutHorizonMetrics) -> dict[str, float | int | 
 
 @torch.no_grad()
 def evaluate_rollouts(
-    dynamics: Dynamics,
-    autoencoder: Autoencoder,
+    dynamics: SpatialLatentDynamics,
+    autoencoder: SpatialAutoencoder,
     dataset: EncodedRolloutDataset,
     device: torch.device,
     *,
@@ -277,9 +233,7 @@ def evaluate_rollouts(
         shuffled = mismatched_actions[offset : offset + count].to(device)
         offset += count
 
-        predicted = recursive_latent_rollout(
-            dynamics, latents[:, 0], latents[:, 1], actions
-        )
+        predicted = recursive_latent_rollout(dynamics, latents[:, 0], latents[:, 1], actions)
         shuffled_predicted = recursive_latent_rollout(
             dynamics, latents[:, 0], latents[:, 1], shuffled
         )
@@ -288,47 +242,45 @@ def evaluate_rollouts(
         for step in range(dataset.horizon):
             target_latent = latents[:, step + 2]
             target_frame = frames[:, step + 2]
-            teacher_latent = dynamics(
-                latents[:, step], latents[:, step + 1], actions[:, step]
-            )
+            teacher_latent = dynamics(latents[:, step], latents[:, step + 1], actions[:, step])
             predicted_frame = autoencoder.decode(predicted[:, step]).clamp(0, 1)
             teacher_frame = autoencoder.decode(teacher_latent).clamp(0, 1)
             oracle_frame = autoencoder.decode(target_latent).clamp(0, 1)
             shuffled_frame = autoencoder.decode(shuffled_predicted[:, step]).clamp(0, 1)
 
-            sums["recursive_latent_squared"][step] += torch.square(
-                predicted[:, step] - target_latent
-            ).sum().item()
-            sums["recursive_pixel_absolute"][step] += torch.abs(
-                predicted_frame - target_frame
-            ).sum().item()
-            sums["recursive_pixel_squared"][step] += torch.square(
-                predicted_frame - target_frame
-            ).sum().item()
-            sums["teacher_latent_squared"][step] += torch.square(
-                teacher_latent - target_latent
-            ).sum().item()
-            sums["teacher_pixel_squared"][step] += torch.square(
-                teacher_frame - target_frame
-            ).sum().item()
-            sums["copy_latent_squared"][step] += torch.square(
-                latents[:, 1] - target_latent
-            ).sum().item()
-            sums["copy_pixel_squared"][step] += torch.square(
-                decoded_copy - target_frame
-            ).sum().item()
-            sums["oracle_pixel_squared"][step] += torch.square(
-                oracle_frame - target_frame
-            ).sum().item()
-            sums["shuffled_latent_squared"][step] += torch.square(
-                shuffled_predicted[:, step] - target_latent
-            ).sum().item()
-            sums["shuffled_pixel_squared"][step] += torch.square(
-                shuffled_frame - target_frame
-            ).sum().item()
-            sums["action_effect_squared"][step] += torch.square(
-                predicted[:, step] - shuffled_predicted[:, step]
-            ).sum().item()
+            sums["recursive_latent_squared"][step] += (
+                torch.square(predicted[:, step] - target_latent).sum().item()
+            )
+            sums["recursive_pixel_absolute"][step] += (
+                torch.abs(predicted_frame - target_frame).sum().item()
+            )
+            sums["recursive_pixel_squared"][step] += (
+                torch.square(predicted_frame - target_frame).sum().item()
+            )
+            sums["teacher_latent_squared"][step] += (
+                torch.square(teacher_latent - target_latent).sum().item()
+            )
+            sums["teacher_pixel_squared"][step] += (
+                torch.square(teacher_frame - target_frame).sum().item()
+            )
+            sums["copy_latent_squared"][step] += (
+                torch.square(latents[:, 1] - target_latent).sum().item()
+            )
+            sums["copy_pixel_squared"][step] += (
+                torch.square(decoded_copy - target_frame).sum().item()
+            )
+            sums["oracle_pixel_squared"][step] += (
+                torch.square(oracle_frame - target_frame).sum().item()
+            )
+            sums["shuffled_latent_squared"][step] += (
+                torch.square(shuffled_predicted[:, step] - target_latent).sum().item()
+            )
+            sums["shuffled_pixel_squared"][step] += (
+                torch.square(shuffled_frame - target_frame).sum().item()
+            )
+            sums["action_effect_squared"][step] += (
+                torch.square(predicted[:, step] - shuffled_predicted[:, step]).sum().item()
+            )
 
         examples += count
         latent_values += predicted[:, 0].numel()
@@ -344,25 +296,18 @@ def evaluate_rollouts(
                 horizon=horizon,
                 seconds=horizon / model_fps,
                 examples=examples,
-                recursive_latent_mse=sums["recursive_latent_squared"][step]
-                / latent_values,
-                recursive_pixel_l1=sums["recursive_pixel_absolute"][step]
-                / pixel_values,
+                recursive_latent_mse=sums["recursive_latent_squared"][step] / latent_values,
+                recursive_pixel_l1=sums["recursive_pixel_absolute"][step] / pixel_values,
                 recursive_pixel_mse=recursive_pixel_mse,
                 recursive_pixel_psnr_db=_psnr(recursive_pixel_mse),
-                teacher_forced_latent_mse=sums["teacher_latent_squared"][step]
-                / latent_values,
-                teacher_forced_pixel_mse=sums["teacher_pixel_squared"][step]
-                / pixel_values,
+                teacher_forced_latent_mse=sums["teacher_latent_squared"][step] / latent_values,
+                teacher_forced_pixel_mse=sums["teacher_pixel_squared"][step] / pixel_values,
                 copy_latent_mse=sums["copy_latent_squared"][step] / latent_values,
                 copy_pixel_mse=sums["copy_pixel_squared"][step] / pixel_values,
                 oracle_pixel_mse=sums["oracle_pixel_squared"][step] / pixel_values,
-                shuffled_action_latent_mse=sums["shuffled_latent_squared"][step]
-                / latent_values,
-                shuffled_action_pixel_mse=sums["shuffled_pixel_squared"][step]
-                / pixel_values,
-                action_effect_latent_mse=sums["action_effect_squared"][step]
-                / latent_values,
+                shuffled_action_latent_mse=sums["shuffled_latent_squared"][step] / latent_values,
+                shuffled_action_pixel_mse=sums["shuffled_pixel_squared"][step] / pixel_values,
+                action_effect_latent_mse=sums["action_effect_squared"][step] / latent_values,
             )
         )
     return tuple(results)
@@ -419,8 +364,8 @@ def _to_bgr(frame: np.ndarray) -> np.ndarray:
 
 @torch.no_grad()
 def save_rollout_filmstrips(
-    dynamics: Dynamics,
-    autoencoder: Autoencoder,
+    dynamics: SpatialLatentDynamics,
+    autoencoder: SpatialAutoencoder,
     dataset: EncodedRolloutDataset,
     path: Path,
     device: torch.device,
@@ -457,9 +402,7 @@ def save_rollout_filmstrips(
         sample = dataset[int(dataset_index)]
         latents = sample["latents"].unsqueeze(0).to(device)
         actions = sample["actions"].unsqueeze(0).to(device)
-        predicted = recursive_latent_rollout(
-            dynamics, latents[:, 0], latents[:, 1], actions
-        )
+        predicted = recursive_latent_rollout(dynamics, latents[:, 0], latents[:, 1], actions)
         mismatch_index = (int(dataset_index) + max(1, len(dataset) // 2)) % len(dataset)
         mismatched_actions = dataset[mismatch_index]["actions"].unsqueeze(0).to(device)
         mismatched = recursive_latent_rollout(
@@ -546,27 +489,12 @@ def evaluate_saved_rollouts(
     if split not in {"validation", "test"}:
         raise ValueError("rollout evaluation split must be validation or test")
     device = choose_device(requested_device)
-    checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    spatial = checkpoint.get("model_type") == "spatial_latent_dynamics"
-    if spatial:
-        dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
-            dynamics_checkpoint, device
-        )
-        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
-            autoencoder_checkpoint
-        ):
-            raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
-        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-        if autoencoder.latent_channels != dynamics.latent_channels:
-            raise ValueError("autoencoder and dynamics latent channels do not match")
-    else:
-        dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
-        _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
-        autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
-            autoencoder_checkpoint, device
-        )
-        if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
-            raise ValueError("autoencoder and dynamics latent dimensions do not match")
+    dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(dynamics_checkpoint, device)
+    if dynamics_metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
+        raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
+    autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+    if autoencoder.latent_channels != dynamics.latent_channels:
+        raise ValueError("autoencoder and dynamics latent channels do not match")
     autoencoder.requires_grad_(False)
     if manifest_path is not None:
         paths = DatasetManifest.load(manifest_path).processed_paths(processed_dir, split)
@@ -574,27 +502,16 @@ def evaluate_saved_rollouts(
         if split == "test":
             raise ValueError("test evaluation requires an explicit manifest")
         _, paths = _processed_splits(processed_dir, None)
-    if spatial:
-        encoded = SpatialEncodedDynamicsDataset.from_paths(
-            paths, autoencoder, device, encode_batch_size=encode_batch_size
-        )
-        dataset = EncodedRolloutDataset(
-            encoded.episodes,
-            encoded.latents,
-            horizon=horizons[-1],
-            maximum_examples=maximum_examples,
-            seed=seed,
-        )
-    else:
-        dataset = EncodedRolloutDataset.from_paths(
-            paths,
-            autoencoder,
-            device,
-            horizon=horizons[-1],
-            encode_batch_size=encode_batch_size,
-            maximum_examples=maximum_examples,
-            seed=seed,
-        )
+    encoded = SpatialEncodedDynamicsDataset.from_paths(
+        paths, autoencoder, device, encode_batch_size=encode_batch_size
+    )
+    dataset = EncodedRolloutDataset(
+        encoded.episodes,
+        encoded.latents,
+        horizon=horizons[-1],
+        maximum_examples=maximum_examples,
+        seed=seed,
+    )
     metrics = evaluate_rollouts(
         dynamics,
         autoencoder,
@@ -629,9 +546,7 @@ def evaluate_saved_rollouts(
                 "autoencoder_checkpoint": str(autoencoder_checkpoint),
                 "autoencoder_sha256": _file_sha256(autoencoder_checkpoint),
                 "dataset_manifest": str(manifest_path) if manifest_path else None,
-                "dataset_manifest_sha256": (
-                    _file_sha256(manifest_path) if manifest_path else None
-                ),
+                "dataset_manifest_sha256": (_file_sha256(manifest_path) if manifest_path else None),
                 "seed": seed,
                 "device": str(device),
             },

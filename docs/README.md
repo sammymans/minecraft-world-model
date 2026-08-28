@@ -2,23 +2,10 @@
 
 - [Project plan](PROJECT.md) — what we are building, how it works, the data
   strategy, architecture, milestones, and completion criteria.
-- [Learning 01: public data](LEARNING_01_PUBLIC_DATA.md) — what a synchronized
-  frame/action episode contains and how to inspect the first real example.
 - [Learning 02: sequence dataset](LEARNING_02_DATASET.md) — filtering unsupported
   transitions, aggregating time, processing frames, and sampling valid windows.
-- [Learning 03: visual autoencoder](LEARNING_03_AUTOENCODER.md) — compressing
-  frames, the sanity-overfit gate, held-out reconstruction, and honest results.
-- [Learning 04: local data pipeline](LEARNING_04_LOCAL_DATA_PIPELINE.md) — a
-  versioned manifest, resumable local downloads, explicit splits, verification,
-  and separate frame policies for representation and dynamics learning.
-- [Learning 05: latent dynamics](LEARNING_05_LATENT_DYNAMICS.md) — frozen visual
-  latents, action-conditioned residual prediction, one-step losses, baselines,
-  and the shuffled-action test.
 - [Data-scaling results](RESULTS_DATA_SCALING.md) — the committed experiment
   table, comparison rules, checkpoint pairings, and protocol for larger data.
-- [Learning 06: multi-step evaluation](LEARNING_06_MULTI_STEP_EVALUATION.md) —
-  recursive open-loop prediction, error growth, baselines, failure modes, and
-  the gate before interaction.
 - [Learning 07: interactive rollout](LEARNING_07_INTERACTIVE_ROLLOUT.md) — live
   action construction, recursive latent state updates, viewer controls, and a
   reproducible scripted mode.
@@ -33,12 +20,11 @@
   recursive predictions drift, five-step unrolled training, and the measured
   result: a horizon-scaling gain (-7.6% at five steps, -21% at twenty) that
   leaves blur as the dominant failure and points at deterministic regression.
-- [Learning 11: rejected diffusion pilots](LEARNING_11_EDM_DIFFUSION.md) — why
-  latent diffusion traded blur for grain, failed its quality gate, and was
-  removed from the working code.
-- [Learning 12: rejected discrete tokenizer](LEARNING_12_DISCRETE_TOKENIZER.md)
-  — a warm-started VQ tokenizer used its codebook but lost too much detail
-  before dynamics training, so the token-model redesign was stopped early.
+- [Rejected visual experiments](REJECTED_VISUAL_EXPERIMENTS.md) — concise results
+  from the direct-diffusion, discrete-tokenizer, and video-flow pilots.
+- [V2 action-conditioned latent diffusion](V2_ACTION_CONDITIONED_LATENT_DIFFUSION.md)
+  — the literature-backed architecture, staged implementation, and visual and
+  action-conditioning gates for the next model.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

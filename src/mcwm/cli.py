@@ -13,7 +13,6 @@ from mcwm.dataset import (
     save_sequence_sheet,
 )
 from mcwm.download import DEMO_STEM, download_episode
-from mcwm.dynamics import evaluate_saved_dynamics, train_dynamics
 from mcwm.interactive import compare_action_scripts, launch_playground
 from mcwm.manifest import (
     DATASET_SPLITS,
@@ -30,13 +29,11 @@ from mcwm.spatial_dynamics import (
     evaluate_saved_spatial_dynamics,
     train_spatial_dynamics,
 )
-from mcwm.spatial_flow import train_spatial_flow
 from mcwm.spatial_training import (
     evaluate_saved_spatial_autoencoder,
     sanity_overfit_spatial_autoencoder,
     train_spatial_autoencoder,
 )
-from mcwm.training import evaluate_saved_autoencoder, sanity_overfit, train_full_autoencoder
 from mcwm.vpt import load_actions
 
 DEFAULT_DATA_DIR = Path("data/raw/vpt")
@@ -52,41 +49,9 @@ def _add_episode_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--episode", default=DEMO_STEM, help="VPT episode filename stem")
 
 
-def _add_autoencoder_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--latent-dim", type=int, default=256)
-    parser.add_argument(
-        "--base-channels",
-        type=int,
-        default=16,
-        help="encoder/decoder width; 32 is wider and slower than the default 16",
-    )
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--horizon", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
-
-
-def _add_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument(
-        "--autoencoder-checkpoint",
-        type=Path,
-        default=Path("artifacts/autoencoder/best.pt"),
-    )
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--encode-batch-size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
-
-
 def _add_spatial_dynamics_data_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v4"))
-    parser.add_argument(
-        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
-    )
+    parser.add_argument("--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl"))
     parser.add_argument(
         "--autoencoder-checkpoint",
         type=Path,
@@ -112,9 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dataset_download.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     dataset_download.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    dataset_download.add_argument(
-        "--split", choices=("all", *DATASET_SPLITS), default="all"
-    )
+    dataset_download.add_argument("--split", choices=("all", *DATASET_SPLITS), default="all")
     dataset_download.add_argument("--workers", type=int, default=3)
     dataset_download.add_argument("--force", action="store_true")
 
@@ -123,9 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="expand a manifest with diverse available VPT 10.x training groups",
     )
     expand_manifest.add_argument("--base-manifest", type=Path, default=DEFAULT_MANIFEST)
-    expand_manifest.add_argument(
-        "--output", type=Path, default=Path("data/manifests/vpt_v2.jsonl")
-    )
+    expand_manifest.add_argument("--output", type=Path, default=Path("data/manifests/vpt_v2.jsonl"))
     expand_manifest.add_argument("--target-gib", type=float, default=10.0)
     expand_manifest.add_argument("--seed", type=int, default=7)
 
@@ -149,9 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_preprocess.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     dataset_preprocess.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     dataset_preprocess.add_argument("--output-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
-    dataset_preprocess.add_argument(
-        "--split", choices=("all", *DATASET_SPLITS), default="all"
-    )
+    dataset_preprocess.add_argument("--split", choices=("all", *DATASET_SPLITS), default="all")
     dataset_preprocess.add_argument("--target-fps", type=float, default=10.0)
     dataset_preprocess.add_argument("--size", type=int, default=64)
     dataset_preprocess.add_argument("--horizon", type=int, default=8)
@@ -206,34 +165,6 @@ def build_parser() -> argparse.ArgumentParser:
     sequence.add_argument("--horizon", type=int, default=8)
     sequence.add_argument("--index", type=int, default=0)
     _add_episode_argument(sequence)
-
-    sanity = commands.add_parser(
-        "sanity-autoencoder", help="intentionally memorize a tiny frame set"
-    )
-    _add_autoencoder_arguments(sanity)
-    sanity.add_argument("--output-dir", type=Path, default=Path("artifacts/autoencoder-sanity"))
-    sanity.add_argument("--frames", type=int, default=32)
-    sanity.add_argument("--steps", type=int, default=600)
-
-    train = commands.add_parser("train-autoencoder", help="train on the full episode split")
-    _add_autoencoder_arguments(train)
-    train.add_argument("--output-dir", type=Path, default=Path("artifacts/autoencoder"))
-    train.add_argument("--epochs", type=int, default=40)
-    train.add_argument("--batch-size", type=int, default=64)
-    train.add_argument("--patience", type=int, default=8)
-
-    evaluate = commands.add_parser(
-        "evaluate-autoencoder", help="recreate metrics and visuals from a checkpoint"
-    )
-    evaluate.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
-    evaluate.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    evaluate.add_argument("--checkpoint", type=Path, default=Path("artifacts/autoencoder/best.pt"))
-    evaluate.add_argument("--output-dir", type=Path, default=Path("artifacts/autoencoder-eval"))
-    evaluate.add_argument("--split", choices=DATASET_SPLITS, default="validation")
-    evaluate.add_argument("--horizon", type=int, default=8)
-    evaluate.add_argument("--batch-size", type=int, default=64)
-    evaluate.add_argument("--count", type=int, default=8)
-    evaluate.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
 
     spatial_sanity = commands.add_parser(
         "sanity-spatial-autoencoder",
@@ -296,45 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
     spatial_evaluate.add_argument(
         "--output-dir", type=Path, default=Path("artifacts/spatial-autoencoder-v3-eval")
     )
-    spatial_evaluate.add_argument(
-        "--split", choices=DATASET_SPLITS, default="validation"
-    )
+    spatial_evaluate.add_argument("--split", choices=DATASET_SPLITS, default="validation")
     spatial_evaluate.add_argument("--batch-size", type=int, default=64)
     spatial_evaluate.add_argument("--count", type=int, default=8)
     spatial_evaluate.add_argument("--device", default="auto")
-
-    train_dynamics_parser = commands.add_parser(
-        "train-dynamics", help="train one-step action-conditioned latent dynamics"
-    )
-    _add_dynamics_data_arguments(train_dynamics_parser)
-    train_dynamics_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/dynamics")
-    )
-    train_dynamics_parser.add_argument("--epochs", type=int, default=40)
-    train_dynamics_parser.add_argument("--hidden-dim", type=int, default=512)
-    train_dynamics_parser.add_argument("--hidden-layers", type=int, default=2)
-    train_dynamics_parser.add_argument("--learning-rate", type=float, default=1e-3)
-    train_dynamics_parser.add_argument("--weight-decay", type=float, default=1e-5)
-    train_dynamics_parser.add_argument("--latent-weight", type=float, default=1.0)
-    train_dynamics_parser.add_argument("--pixel-weight", type=float, default=1.0)
-    train_dynamics_parser.add_argument("--patience", type=int, default=8)
-
-    evaluate_dynamics_parser = commands.add_parser(
-        "evaluate-dynamics", help="evaluate a saved one-step dynamics checkpoint"
-    )
-    _add_dynamics_data_arguments(evaluate_dynamics_parser)
-    evaluate_dynamics_parser.add_argument(
-        "--dynamics-checkpoint",
-        type=Path,
-        default=Path("artifacts/dynamics/best.pt"),
-    )
-    evaluate_dynamics_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/dynamics-eval")
-    )
-    evaluate_dynamics_parser.add_argument(
-        "--split", choices=DATASET_SPLITS, default="validation"
-    )
-    evaluate_dynamics_parser.add_argument("--count", type=int, default=6)
 
     train_spatial_dynamics_parser = commands.add_parser(
         "train-spatial-dynamics",
@@ -388,36 +284,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="fine-tune this saved spatial dynamics checkpoint instead of starting fresh",
     )
 
-    train_flow_parser = commands.add_parser(
-        "train-spatial-flow",
-        help="train an action-conditioned flow model that generates eight future latents jointly",
-    )
-    _add_spatial_dynamics_data_arguments(train_flow_parser)
-    train_flow_parser.set_defaults(batch_size=16)
-    train_flow_parser.add_argument(
-        "--output-dir", type=Path, default=Path("artifacts/spatial-flow-v4-pilot")
-    )
-    train_flow_parser.add_argument(
-        "--base-dynamics-checkpoint",
-        type=Path,
-        default=Path("artifacts/spatial-dynamics-v4-multistep/best.pt"),
-    )
-    train_flow_parser.add_argument("--epochs", type=int, default=5)
-    train_flow_parser.add_argument("--maximum-sequences", type=int, default=4_000)
-    train_flow_parser.add_argument(
-        "--maximum-validation-sequences", type=int, default=256
-    )
-    train_flow_parser.add_argument("--horizon", type=int, default=8)
-    train_flow_parser.add_argument("--hidden-channels", type=int, default=128)
-    train_flow_parser.add_argument("--condition-dim", type=int, default=128)
-    train_flow_parser.add_argument("--learning-rate", type=float, default=3e-4)
-    train_flow_parser.add_argument("--weight-decay", type=float, default=1e-5)
-    train_flow_parser.add_argument("--action-dropout", type=float, default=0.15)
-    train_flow_parser.add_argument("--sampling-steps", type=int, default=8)
-    train_flow_parser.add_argument("--guidance-scale", type=float, default=2.0)
-    train_flow_parser.add_argument("--refinement-strength", type=float, default=0.2)
-    train_flow_parser.add_argument("--initial-checkpoint", type=Path)
-
     evaluate_spatial_dynamics_parser = commands.add_parser(
         "evaluate-spatial-dynamics",
         help="evaluate a saved spatial dynamics checkpoint against its baselines",
@@ -454,9 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--horizons", type=int, nargs="+", default=(1, 2, 5, 10, 20)
     )
     evaluate_rollout_parser.add_argument("--count", type=int, default=3)
-    evaluate_rollout_parser.add_argument(
-        "--maximum-examples", type=int, default=5_000
-    )
+    evaluate_rollout_parser.add_argument("--maximum-examples", type=int, default=5_000)
     evaluate_rollout_parser.add_argument(
         "--split", choices=("validation", "test"), default="validation"
     )
@@ -504,9 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("artifacts/interactive-rollout/scripted-rollout.png"),
     )
-    play_rollout_parser.add_argument(
-        "--device", default="auto", help="auto, mps, cuda, or cpu"
-    )
+    play_rollout_parser.add_argument("--device", default="auto", help="auto, mps, cuda, or cpu")
     play_rollout_parser.add_argument("--host", default="127.0.0.1")
     play_rollout_parser.add_argument("--port", type=int, default=8765)
     play_rollout_parser.add_argument(
@@ -585,9 +447,7 @@ def main(argv: list[str] | None = None) -> int:
             target_bytes=int(args.target_gib * 1024**3),
             seed=args.seed,
         )
-        expected = sum(
-            entry.video_bytes + entry.actions_bytes for entry in manifest.episodes
-        )
+        expected = sum(entry.video_bytes + entry.actions_bytes for entry in manifest.episodes)
         print(f"Wrote: {args.output}")
         print(f"Episodes: {len(manifest.episodes)}")
         print(f"Independent groups: {len({entry.group for entry in manifest.episodes})}")
@@ -646,9 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         if status.raw_complete != status.episodes:
             raise SystemExit("Raw dataset is incomplete. Run: uv run mcwm dataset-download")
         if status.processed_complete != status.episodes:
-            raise SystemExit(
-                "Processed dataset is incomplete. Run: uv run mcwm dataset-preprocess"
-            )
+            raise SystemExit("Processed dataset is incomplete. Run: uv run mcwm dataset-preprocess")
         print("dataset verification passed")
         return 0
 
@@ -686,75 +544,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"model actions: {sample.actions.shape}")
         print(f"source frames: {sample.source_frame_indices.tolist()}")
         print(f"wrote: {args.output}")
-        return 0
-
-    if args.command == "sanity-autoencoder":
-        result = sanity_overfit(
-            args.processed_dir,
-            args.output_dir,
-            frame_count=args.frames,
-            steps=args.steps,
-            latent_dim=args.latent_dim,
-            base_channels=args.base_channels,
-            learning_rate=args.learning_rate,
-            horizon=args.horizon,
-            manifest_path=args.manifest,
-            seed=args.seed,
-            requested_device=args.device,
-        )
-        print(f"device:       {result.device}")
-        print(f"parameters:   {result.parameter_count:,}")
-        print(f"training L1:  {result.train_metrics.l1:.6f}")
-        print(f"training PSNR: {result.train_metrics.psnr_db:.2f} dB")
-        print(f"checkpoint:   {result.checkpoint}")
-        print(f"visual:       {result.reconstruction_grid}")
-        return 0
-
-    if args.command == "train-autoencoder":
-        result = train_full_autoencoder(
-            args.processed_dir,
-            args.output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            latent_dim=args.latent_dim,
-            base_channels=args.base_channels,
-            learning_rate=args.learning_rate,
-            horizon=args.horizon,
-            manifest_path=args.manifest,
-            patience=args.patience,
-            seed=args.seed,
-            requested_device=args.device,
-        )
-        validation = result.validation_metrics
-        assert validation is not None
-        print(f"device:          {result.device}")
-        print(f"parameters:      {result.parameter_count:,}")
-        print(f"training L1:     {result.train_metrics.l1:.6f}")
-        print(f"validation L1:   {validation.l1:.6f}")
-        print(f"validation PSNR: {validation.psnr_db:.2f} dB")
-        print(f"checkpoint:      {result.checkpoint}")
-        print(f"visual:          {result.reconstruction_grid}")
-        return 0
-
-    if args.command == "evaluate-autoencoder":
-        result = evaluate_saved_autoencoder(
-            args.processed_dir,
-            args.checkpoint,
-            args.output_dir,
-            split=args.split,
-            horizon=args.horizon,
-            manifest_path=args.manifest,
-            batch_size=args.batch_size,
-            count=args.count,
-            requested_device=args.device,
-        )
-        print(f"device:  {result.device}")
-        print(f"frames:  {result.frame_count:,}")
-        print(f"L1:      {result.metrics.l1:.6f}")
-        print(f"MSE:     {result.metrics.mse:.6f}")
-        print(f"PSNR:    {result.metrics.psnr_db:.2f} dB")
-        print(f"visual:  {result.reconstruction_grid}")
-        print(f"curve:   {result.training_curve}")
         return 0
 
     if args.command == "sanity-spatial-autoencoder":
@@ -830,73 +619,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"visual:       {result.reconstruction_grid}")
         return 0
 
-    if args.command == "train-dynamics":
-        result = train_dynamics(
-            args.processed_dir,
-            args.autoencoder_checkpoint,
-            args.output_dir,
-            base_dynamics_checkpoint=args.base_dynamics_checkpoint,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            encode_batch_size=args.encode_batch_size,
-            hidden_dim=args.hidden_dim,
-            hidden_layers=args.hidden_layers,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            latent_weight=args.latent_weight,
-            pixel_weight=args.pixel_weight,
-            manifest_path=args.manifest,
-            patience=args.patience,
-            seed=args.seed,
-            requested_device=args.device,
-        )
-        validation = result.validation_metrics
-        print(f"device:                    {result.device}")
-        print(f"latent features:           {result.latent_dim}")
-        print(f"dynamics parameters:       {result.parameter_count:,}")
-        print(f"validation latent MSE:     {validation.latent_mse:.6f}")
-        print(f"copy baseline latent MSE:  {validation.copy_latent_mse:.6f}")
-        print(f"validation pixel MSE:      {validation.pixel_mse:.6f}")
-        print(f"decoded-copy pixel MSE:    {validation.decoded_copy_pixel_mse:.6f}")
-        print(f"decoder-oracle pixel MSE:  {validation.oracle_pixel_mse:.6f}")
-        print(
-            "shuffled-action degradation: "
-            f"{validation.shuffled_action_degradation:+.6f}"
-        )
-        print(f"checkpoint:                {result.checkpoint}")
-        print(f"visual:                    {result.comparison_grid}")
-        return 0
-
-    if args.command == "evaluate-dynamics":
-        result = evaluate_saved_dynamics(
-            args.processed_dir,
-            args.autoencoder_checkpoint,
-            args.dynamics_checkpoint,
-            args.output_dir,
-            split=args.split,
-            manifest_path=args.manifest,
-            batch_size=args.batch_size,
-            encode_batch_size=args.encode_batch_size,
-            count=args.count,
-            seed=args.seed,
-            requested_device=args.device,
-        )
-        metrics = result.metrics
-        print(f"device:                    {result.device}")
-        print(f"examples:                  {result.example_count:,}")
-        print(f"latent features:           {result.latent_dim}")
-        print(f"latent MSE:                {metrics.latent_mse:.6f}")
-        print(f"copy baseline latent MSE:  {metrics.copy_latent_mse:.6f}")
-        print(f"pixel PSNR:                {metrics.pixel_psnr_db:.2f} dB")
-        print(f"decoded-copy pixel MSE:    {metrics.decoded_copy_pixel_mse:.6f}")
-        print(f"decoder-oracle pixel MSE:  {metrics.oracle_pixel_mse:.6f}")
-        print(
-            "shuffled-action degradation: "
-            f"{metrics.shuffled_action_degradation:+.6f}"
-        )
-        print(f"visual:                    {result.comparison_grid}")
-        return 0
-
     if args.command == "train-spatial-dynamics":
         result = train_spatial_dynamics(
             args.processed_dir,
@@ -934,50 +656,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"validation pixel L1:         {validation.pixel_l1:.6f}")
         print(f"decoded-copy pixel L1:       {validation.decoded_copy_pixel_l1:.6f}")
         print(f"decoder-oracle pixel L1:     {validation.oracle_pixel_l1:.6f}")
-        print(
-            "shuffled-action degradation: "
-            f"{validation.shuffled_action_degradation:+.6f}"
-        )
+        print(f"shuffled-action degradation: {validation.shuffled_action_degradation:+.6f}")
         print(f"checkpoint:                  {result.checkpoint}")
         print(f"visual:                      {result.comparison_grid}")
-        return 0
-
-    if args.command == "train-spatial-flow":
-        result = train_spatial_flow(
-            args.processed_dir,
-            args.manifest,
-            args.autoencoder_checkpoint,
-            args.output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            encode_batch_size=args.encode_batch_size,
-            maximum_sequences=args.maximum_sequences,
-            maximum_validation_sequences=args.maximum_validation_sequences,
-            horizon=args.horizon,
-            hidden_channels=args.hidden_channels,
-            condition_dim=args.condition_dim,
-            learning_rate=args.learning_rate,
-            weight_decay=args.weight_decay,
-            action_dropout=args.action_dropout,
-            sampling_steps=args.sampling_steps,
-            guidance_scale=args.guidance_scale,
-            refinement_strength=args.refinement_strength,
-            initial_checkpoint=args.initial_checkpoint,
-            seed=args.seed,
-            requested_device=args.device,
-        )
-        metrics = result.metrics
-        print(f"device:                {result.device}")
-        print(f"flow parameters:       {result.parameter_count:,}")
-        print(f"training clips:        {result.training_sequences:,}")
-        print(f"sampled pixel MSE:     {metrics.sampled_pixel_mse:.6f}")
-        print(f"copy pixel MSE:        {metrics.copy_pixel_mse:.6f}")
-        print(f"edge energy ratio:     {metrics.edge_energy_ratio:.3f}")
-        print(f"gradient alignment:    {metrics.gradient_alignment:.3f}")
-        print(f"wrong-action penalty:  {metrics.action_penalty_percent:+.1f}%")
-        print(f"milliseconds per clip: {metrics.milliseconds_per_clip:.1f}")
-        print(f"checkpoint:            {result.checkpoint}")
-        print(f"visual:                {result.filmstrip}")
         return 0
 
     if args.command == "evaluate-spatial-dynamics":
@@ -1004,10 +685,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"decoded-copy pixel L1:       {metrics.decoded_copy_pixel_l1:.6f}")
         print(f"decoder-oracle pixel L1:     {metrics.oracle_pixel_l1:.6f}")
         print(f"pixel PSNR:                  {metrics.pixel_psnr_db:.2f} dB")
-        print(
-            "shuffled-action degradation: "
-            f"{metrics.shuffled_action_degradation:+.6f}"
-        )
+        print(f"shuffled-action degradation: {metrics.shuffled_action_degradation:+.6f}")
         print(f"visual:                      {result.comparison_grid}")
         return 0
 

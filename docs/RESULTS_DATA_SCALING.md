@@ -189,7 +189,7 @@ visual blur and weak control more clearly than aggregate error did. The spatial
 replacement now passes one-step, action-ablation, recursive, and browser tests
 on broad V4 splits. It is a working small world model, though recursive outputs
 still smooth over time. The evaluation protocol remains the one in
-`LEARNING_06_MULTI_STEP_EVALUATION.md`.
+`LEARNING_10_MULTI_STEP_TRAINING.md`.
 
 ## Historical flat-latent multi-step baseline
 

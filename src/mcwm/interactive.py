@@ -9,27 +9,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from torch import nn
 
 from mcwm.dataset import SequenceDataset
-from mcwm.dynamics import (
-    _file_sha256,
-    _processed_splits,
-    _verify_autoencoder,
-    load_dynamics_checkpoint,
-)
-from mcwm.model import (
-    LatentDynamics,
-    SpatialAutoencoder,
-    SpatialLatentDynamics,
-    TinyAutoencoder,
-)
+from mcwm.dynamics import _file_sha256, _processed_splits
 from mcwm.spatial_dynamics import load_spatial_dynamics_checkpoint
-from mcwm.spatial_flow import FlowStepAdapter, load_spatial_flow_checkpoint
 from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
-from mcwm.training import choose_device, load_autoencoder_checkpoint
-
-Autoencoder = TinyAutoencoder | SpatialAutoencoder
-Dynamics = LatentDynamics | SpatialLatentDynamics | FlowStepAdapter
+from mcwm.training import choose_device
 
 ACTION_NAMES = (
     "w",
@@ -73,9 +59,7 @@ class RolloutSeedBank:
         self.dataset = dataset
 
     @classmethod
-    def load(
-        cls, processed_dir: Path, manifest_path: Path | None
-    ) -> RolloutSeedBank:
+    def load(cls, processed_dir: Path, manifest_path: Path | None) -> RolloutSeedBank:
         _, validation_paths = _processed_splits(processed_dir, manifest_path)
         return cls(SequenceDataset.from_paths(validation_paths, horizon=1))
 
@@ -179,8 +163,8 @@ class InteractiveRolloutEngine:
 
     def __init__(
         self,
-        autoencoder: Autoencoder,
-        dynamics: Dynamics,
+        autoencoder: nn.Module,
+        dynamics: nn.Module,
         previous_latent: torch.Tensor,
         current_latent: torch.Tensor,
         current_frame: np.ndarray,
@@ -188,14 +172,14 @@ class InteractiveRolloutEngine:
     ) -> None:
         if previous_latent.shape != current_latent.shape:
             raise ValueError("seed latents must have identical shapes")
-        if hasattr(dynamics, "latent_dim"):
-            valid_shape = previous_latent.shape == (1, dynamics.latent_dim)
-        else:
+        if hasattr(dynamics, "latent_channels"):
             valid_shape = (
                 previous_latent.ndim == 4
                 and previous_latent.shape[0] == 1
                 and previous_latent.shape[1] == dynamics.latent_channels
             )
+        else:
+            valid_shape = previous_latent.shape == (1, dynamics.latent_dim)
         if not valid_shape:
             raise ValueError("seed latent shape does not match dynamics model")
         if current_frame.ndim != 3 or current_frame.shape[-1] != 3:
@@ -215,8 +199,8 @@ class InteractiveRolloutEngine:
     @torch.no_grad()
     def from_seed(
         cls,
-        autoencoder: Autoencoder,
-        dynamics: Dynamics,
+        autoencoder: nn.Module,
+        dynamics: nn.Module,
         seed: RolloutSeed,
         device: torch.device,
     ) -> InteractiveRolloutEngine:
@@ -253,9 +237,6 @@ class InteractiveRolloutEngine:
         return frame.copy()
 
     def reset(self) -> np.ndarray:
-        reset_sampling = getattr(self.dynamics, "reset_sampling", None)
-        if callable(reset_sampling):
-            reset_sampling()
         self.previous_latent = self.seed_previous.clone()
         self.current_latent = self.seed_current.clone()
         self.current_frame = self.seed_frame.copy()
@@ -267,9 +248,7 @@ class InteractiveRolloutEngine:
         """Replace both real seed frames while keeping the loaded models."""
         frames = np.stack((seed.previous_frame, seed.current_frame))
         contiguous = np.ascontiguousarray(frames.transpose(0, 3, 1, 2))
-        tensor = torch.from_numpy(contiguous).to(
-            device=self.device, dtype=torch.float32
-        ).div_(255)
+        tensor = torch.from_numpy(contiguous).to(device=self.device, dtype=torch.float32).div_(255)
         latents = self.autoencoder.encode(tensor)
         self.seed_previous = latents[0:1].detach().clone()
         self.seed_current = latents[1:2].detach().clone()
@@ -286,45 +265,12 @@ def _load_playground(
     requested_device: str,
 ) -> tuple[InteractiveRolloutEngine, RolloutSeed, RolloutSeedBank, torch.device]:
     device = choose_device(requested_device)
-    checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    model_type = checkpoint.get("model_type")
-    if model_type == "spatial_latent_dynamics":
-        dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
-            dynamics_checkpoint, device
-        )
-        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(
-            autoencoder_checkpoint
-        ):
-            raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
-        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-        if autoencoder.latent_channels != dynamics.latent_channels:
-            raise ValueError("autoencoder and dynamics latent channels do not match")
-    elif model_type == "spatial_latent_video_flow":
-        flow, dynamics_metadata = load_spatial_flow_checkpoint(dynamics_checkpoint, device)
-        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
-            raise ValueError("spatial flow belongs to a different autoencoder checkpoint")
-        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
-        if autoencoder.latent_channels != flow.latent_channels:
-            raise ValueError("autoencoder and flow latent channels do not match")
-        base_checkpoint = Path(dynamics_metadata["base_dynamics_checkpoint"])
-        if _file_sha256(base_checkpoint) != dynamics_metadata["base_dynamics_sha256"]:
-            raise ValueError("flow base dynamics checkpoint changed after training")
-        base_dynamics, _ = load_spatial_dynamics_checkpoint(base_checkpoint, device)
-        dynamics = FlowStepAdapter(
-            flow,
-            base_dynamics,
-            steps=int(dynamics_metadata["sampling_steps"]),
-            guidance_scale=float(dynamics_metadata["guidance_scale"]),
-            refinement_strength=float(dynamics_metadata["refinement_strength"]),
-        ).to(device)
-    else:
-        dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
-        _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)
-        autoencoder, autoencoder_metadata = load_autoencoder_checkpoint(
-            autoencoder_checkpoint, device
-        )
-        if int(autoencoder_metadata["latent_dim"]) != dynamics.latent_dim:
-            raise ValueError("autoencoder and dynamics latent dimensions do not match")
+    dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(dynamics_checkpoint, device)
+    if dynamics_metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
+        raise ValueError("spatial dynamics belongs to a different autoencoder checkpoint")
+    autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+    if autoencoder.latent_channels != dynamics.latent_channels:
+        raise ValueError("autoencoder and dynamics latent channels do not match")
     autoencoder.requires_grad_(False)
     seeds = RolloutSeedBank.load(processed_dir, manifest_path)
     seed = seeds.get(sample_index)
@@ -334,9 +280,7 @@ def _load_playground(
 
 def _action_label(action: np.ndarray) -> str:
     controls = [
-        name.upper()
-        for name, value in zip(BINARY_ACTIONS, action[:7], strict=True)
-        if value
+        name.upper() for name, value in zip(BINARY_ACTIONS, action[:7], strict=True) if value
     ]
     keys = "+".join(controls) if controls else "IDLE"
     return f"{keys} mouse=({action[-2]:+.0f},{action[-1]:+.0f})"
@@ -358,9 +302,7 @@ def save_scripted_rollout(
         x = column * tile_width
         y = row * tile_height
         enlarged = cv2.resize(frame, (208, 176), interpolation=cv2.INTER_NEAREST)
-        canvas[y + 30 : y + 206, x + 24 : x + 232] = cv2.cvtColor(
-            enlarged, cv2.COLOR_RGB2BGR
-        )
+        canvas[y + 30 : y + 206, x + 24 : x + 232] = cv2.cvtColor(enlarged, cv2.COLOR_RGB2BGR)
         if index == 0:
             label = "real seed t"
         else:

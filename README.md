@@ -23,22 +23,10 @@ video generator in scope.
 
 The canonical V1 project plan is [docs/PROJECT.md](docs/PROJECT.md). The approved
 [V2 latent-diffusion plan](docs/V2_ACTION_CONDITIONED_LATENT_DIFFUSION.md)
-targets a more recognizable visual demo while preserving V1. The hands-on
-lessons are:
-
-1. [Public frames and actions](docs/LEARNING_01_PUBLIC_DATA.md)
-2. [Cleaning and sequence datasets](docs/LEARNING_02_DATASET.md)
-3. [Visual autoencoder](docs/LEARNING_03_AUTOENCODER.md)
-4. [Local dataset pipeline](docs/LEARNING_04_LOCAL_DATA_PIPELINE.md)
-5. [Action-conditioned latent dynamics](docs/LEARNING_05_LATENT_DYNAMICS.md)
-6. [Multi-step recursive evaluation](docs/LEARNING_06_MULTI_STEP_EVALUATION.md)
-7. [Interactive latent rollout](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md)
-8. [Spatial representation redesign](docs/LEARNING_08_SPATIAL_AUTOENCODER.md)
-9. [Spatial action-conditioned dynamics](docs/LEARNING_09_SPATIAL_DYNAMICS.md)
-10. [Multi-step dynamics training](docs/LEARNING_10_MULTI_STEP_TRAINING.md)
-11. [Rejected EDM diffusion pilot](docs/LEARNING_11_EDM_DIFFUSION.md)
-12. [Rejected discrete-tokenizer pilot](docs/LEARNING_12_DISCRETE_TOKENIZER.md)
-13. [Latent-video flow refinement](docs/LEARNING_13_LATENT_VIDEO_FLOW.md)
+targets a more recognizable visual demo while preserving V1. The retained
+learning notes cover the final data pipeline, spatial representation, dynamics,
+recursive training, and interactive rollout. Rejected sharpness pilots are
+summarized in one [experiment record](docs/REJECTED_VISUAL_EXPERIMENTS.md).
 
 Measured scaling results are tracked in
 [docs/RESULTS_DATA_SCALING.md](docs/RESULTS_DATA_SCALING.md).

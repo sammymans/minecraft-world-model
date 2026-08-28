@@ -59,9 +59,7 @@ def test_realtime_action_uses_held_keys_and_relative_camera() -> None:
 
 
 def test_script_parses_repetition_and_camera_actions() -> None:
-    actions = parse_action_script(
-        "w+sprint*2, w+look_right, idle*2", camera_step=30
-    )
+    actions = parse_action_script("w+sprint*2, w+look_right, idle*2", camera_step=30)
 
     assert actions.shape == (5, 9)
     assert actions[:2, ACTION_INDEX["w"]].tolist() == [1, 1]
