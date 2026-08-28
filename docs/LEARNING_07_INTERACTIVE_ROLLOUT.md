@@ -50,10 +50,10 @@ a_t=[W,A,S,D,\text{jump},\text{sprint},\text{sneak},
 \Delta x_{mouse},\Delta y_{mouse}].
 $$
 
-Held keys are sampled at every 10 Hz model step. Pressing `W` therefore sends
-`W=1` and advances the world automatically for as long as the key remains down;
-releasing it sends `W=0`. Camera movement is accumulated and consumed once per
-step, matching a mouse delta over one transition.
+Held keys are sampled at every model step. While paused, each movement-key press
+advances exactly once. Continuous playback defaults to one step per second so
+the short coherent horizon can be inspected; the speed button can restore the
+recorded 10 Hz rate. Camera movement is accumulated and consumed once per step.
 
 The controls are:
 
@@ -67,6 +67,8 @@ The controls are:
 | click the viewport | capture the mouse for relative camera control |
 | `Escape` | release the captured mouse |
 | `P` or Pause button | pause or resume; starting this way produces an idle rollout |
+| `N` or Step once button | advance exactly one frame using the currently held controls |
+| speed button | toggle between one step per second and the recorded model rate |
 | `R` or Reset button | reset to the original seed pair |
 | previous/random/next seed | choose a different held-out scene and reset the rollout |
 | Stop server button | stop the local model process |
@@ -74,8 +76,8 @@ The controls are:
 The lightweight browser frontend reports both key presses and releases, so the
 controls behave normally. It shows only the current $64\times64$ frame enlarged
 inside one viewport; the two seed frames remain internal model state. The page
-waits at the real current seed until the first action key is pressed, then sends
-one action request every 100 ms.
+waits at the real current seed until an action key or Step once is pressed.
+Continuous playback sends actions at the selected rate.
 
 The page is vanilla HTML, CSS, and JavaScript served by Python's standard HTTP
 server on `127.0.0.1`. It requires no internet connection, frontend build,

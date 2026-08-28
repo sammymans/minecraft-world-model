@@ -93,6 +93,9 @@ def test_local_frontend_serves_single_view_and_model_endpoints() -> None:
         with urlopen(base, timeout=2) as response:  # noqa: S310
             html = response.read().decode()
         assert html.count('id="frame"') == 1
+        assert html.count('id="single-step"') == 1
+        assert 'id="speed">1 step/s' in html
+        assert "let playbackFps = 1" in html
         assert "real seed t-1" not in html
         assert "real seed t" not in html
 

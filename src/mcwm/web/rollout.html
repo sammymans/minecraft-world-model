@@ -258,6 +258,8 @@
           <div class="label">Rollout</div>
           <div class="row">
             <button class="primary" id="pause">Start</button>
+            <button id="single-step">Step once</button>
+            <button id="speed">1 step/s</button>
             <button id="reset">Reset</button>
             <button id="capture" aria-pressed="false">Mouse look</button>
           </div>
@@ -270,6 +272,7 @@
             <kbd>Shift</kbd><span>sprint</span>
             <kbd>Space</kbd><span>jump</span>
             <kbd>Click</kbd><span>look around</span>
+            <kbd>N</kbd><span>step once</span>
             <kbd>Esc</kbd><span>release mouse</span>
           </div>
         </div>
@@ -308,6 +311,8 @@
     const actionEl = document.querySelector('#action');
     const mouseEl = document.querySelector('#mouse');
     const pauseButton = document.querySelector('#pause');
+    const singleStepButton = document.querySelector('#single-step');
+    const speedButton = document.querySelector('#speed');
     const captureButton = document.querySelector('#capture');
     const held = new Set();
     // The model stays coherent while little new content enters per imagined
@@ -323,6 +328,7 @@
     let frameUrl = null;
     let timer = null;
     let info = null;
+    let playbackFps = 1;
 
     const keyMap = {
       KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
@@ -331,6 +337,10 @@
       ArrowLeft: 'look_left', ArrowRight: 'look_right',
       ArrowUp: 'look_up', ArrowDown: 'look_down'
     };
+    const stepOnPressCodes = new Set([
+      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space',
+      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'
+    ]);
 
     function setStatus(text, state) {
       statusEl.textContent = text;
@@ -396,8 +406,8 @@
       return Math.max(-MOUSE_STEP_LIMIT, Math.min(MOUSE_STEP_LIMIT, scaled));
     }
 
-    async function tick() {
-      if (!running || pending) return;
+    async function tick(force = false) {
+      if ((!running && !force) || pending) return;
       pending = true;
       const dx = sensitize(mouseDx);
       const dy = sensitize(mouseDy);
@@ -454,7 +464,10 @@
       if (control) {
         event.preventDefault();
         held.add(control);
-        setRunning(true);
+        if (!running && !event.repeat && stepOnPressCodes.has(event.code)) tick(true);
+      } else if (event.code === 'KeyN') {
+        event.preventDefault();
+        tick(true);
       } else if (event.code === 'KeyP') {
         setRunning(!running);
       } else if (event.code === 'KeyR') {
@@ -470,7 +483,6 @@
       if (document.pointerLockElement === stage) {
         mouseDx += event.movementX;
         mouseDy += event.movementY;
-        setRunning(true);
       }
     });
     document.addEventListener('pointerlockchange', () => {
@@ -481,6 +493,14 @@
     stage.addEventListener('click', () => stage.requestPointerLock());
     captureButton.addEventListener('click', () => stage.requestPointerLock());
     pauseButton.addEventListener('click', () => setRunning(!running));
+    singleStepButton.addEventListener('click', () => tick(true));
+    speedButton.addEventListener('click', () => {
+      if (!info) return;
+      playbackFps = playbackFps === 1 ? info.model_fps : 1;
+      speedButton.textContent = playbackFps === 1 ? '1 step/s' : `${playbackFps} steps/s`;
+      if (timer) clearInterval(timer);
+      timer = setInterval(tick, 1000 / playbackFps);
+    });
     document.querySelector('#previous-seed').addEventListener('click', () => {
       if (!info) return;
       const jump = Math.max(1, Math.floor(info.seed_count / 100));
@@ -508,7 +528,7 @@
     async function initialize() {
       showInfo(await fetch('/api/info').then(response => response.json()));
       await getFrame('/api/frame');
-      timer = setInterval(tick, 1000 / info.model_fps);
+      timer = setInterval(tick, 1000 / playbackFps);
       goIdle();
       stage.focus();
     }
