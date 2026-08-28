@@ -447,6 +447,10 @@ The following are explicitly outside the current project:
 If a proposed feature does not directly help us record sequences, train the
 tiny latent model, or interact with its rollout, we should leave it out.
 
-A bounded latent flow-matching refiner is allowed as a separate demo experiment.
-It must preserve the tested V1 dynamics path, remain optional, and pass an
-action-sensitivity check; visual sharpness alone is not evidence of a world model.
+V1 remains the reproducible completion of this plan. A separate V2
+action-conditioned latent-diffusion dynamics model is now approved to pursue a
+recognizable five-to-ten-step visual demo. Its scope, gates, and reading list
+are defined in
+[V2_ACTION_CONDITIONED_LATENT_DIFFUSION.md](V2_ACTION_CONDITIONED_LATENT_DIFFUSION.md).
+It must not overwrite V1 or become the default unless it passes the human visual
+gate.

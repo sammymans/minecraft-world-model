@@ -21,7 +21,9 @@ the same pipeline.
 There is no agent, planning system, MPC, robotics layer, or high-resolution
 video generator in scope.
 
-The canonical project plan is [docs/PROJECT.md](docs/PROJECT.md). The hands-on
+The canonical V1 project plan is [docs/PROJECT.md](docs/PROJECT.md). The approved
+[V2 latent-diffusion plan](docs/V2_ACTION_CONDITIONED_LATENT_DIFFUSION.md)
+targets a more recognizable visual demo while preserving V1. The hands-on
 lessons are:
 
 1. [Public frames and actions](docs/LEARNING_01_PUBLIC_DATA.md)
@@ -51,9 +53,9 @@ uv run mcwm play-rollout
 
 The model initializes from two held-out seed frames, but the browser frontend
 shows only one large current viewport. Every later image is recursively imagined
-from your controls. Hold a movement key and the model automatically advances at
-10 Hz; no separate step or play command is required. Use the seed buttons to
-jump to another held-out Minecraft scene without restarting the model.
+from your controls. Playback defaults to one step per second, and movement keys
+advance once while paused; the speed control can restore 10 Hz. Use the seed
+buttons to jump to another held-out Minecraft scene without restarting the model.
 See [Learning 07](docs/LEARNING_07_INTERACTIVE_ROLLOUT.md) for the controls and
 scripted mode.
 
