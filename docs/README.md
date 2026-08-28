@@ -36,6 +36,9 @@
 - [Learning 11: rejected diffusion pilots](LEARNING_11_EDM_DIFFUSION.md) — why
   latent diffusion traded blur for grain, failed its quality gate, and was
   removed from the working code.
+- [Learning 12: rejected discrete tokenizer](LEARNING_12_DISCRETE_TOKENIZER.md)
+  — a warm-started VQ tokenizer used its codebook but lost too much detail
+  before dynamics training, so the token-model redesign was stopped early.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.
