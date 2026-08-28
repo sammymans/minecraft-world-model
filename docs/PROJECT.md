@@ -437,7 +437,7 @@ The following are explicitly outside the current project:
 - robotics framing;
 - text conditioning;
 - high-resolution or photorealistic video generation;
-- transformers, diffusion models, or large pretrained models;
+- transformers, large pretrained models, or full-resolution diffusion models;
 - full Minecraft mechanics;
 - long-horizon coherence;
 - inventory and crafting;
@@ -446,3 +446,7 @@ The following are explicitly outside the current project:
 
 If a proposed feature does not directly help us record sequences, train the
 tiny latent model, or interact with its rollout, we should leave it out.
+
+A bounded latent flow-matching refiner is allowed as a separate demo experiment.
+It must preserve the tested V1 dynamics path, remain optional, and pass an
+action-sensitivity check; visual sharpness alone is not evidence of a world model.

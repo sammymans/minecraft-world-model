@@ -34,6 +34,9 @@ lessons are:
 8. [Spatial representation redesign](docs/LEARNING_08_SPATIAL_AUTOENCODER.md)
 9. [Spatial action-conditioned dynamics](docs/LEARNING_09_SPATIAL_DYNAMICS.md)
 10. [Multi-step dynamics training](docs/LEARNING_10_MULTI_STEP_TRAINING.md)
+11. [Rejected EDM diffusion pilot](docs/LEARNING_11_EDM_DIFFUSION.md)
+12. [Rejected discrete-tokenizer pilot](docs/LEARNING_12_DISCRETE_TOKENIZER.md)
+13. [Latent-video flow refinement](docs/LEARNING_13_LATENT_VIDEO_FLOW.md)
 
 Measured scaling results are tracked in
 [docs/RESULTS_DATA_SCALING.md](docs/RESULTS_DATA_SCALING.md).

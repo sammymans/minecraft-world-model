@@ -24,11 +24,12 @@ from mcwm.model import (
     TinyAutoencoder,
 )
 from mcwm.spatial_dynamics import load_spatial_dynamics_checkpoint
+from mcwm.spatial_flow import FlowStepAdapter, load_spatial_flow_checkpoint
 from mcwm.spatial_training import load_spatial_autoencoder_checkpoint
 from mcwm.training import choose_device, load_autoencoder_checkpoint
 
 Autoencoder = TinyAutoencoder | SpatialAutoencoder
-Dynamics = LatentDynamics | SpatialLatentDynamics
+Dynamics = LatentDynamics | SpatialLatentDynamics | FlowStepAdapter
 
 ACTION_NAMES = (
     "w",
@@ -252,6 +253,9 @@ class InteractiveRolloutEngine:
         return frame.copy()
 
     def reset(self) -> np.ndarray:
+        reset_sampling = getattr(self.dynamics, "reset_sampling", None)
+        if callable(reset_sampling):
+            reset_sampling()
         self.previous_latent = self.seed_previous.clone()
         self.current_latent = self.seed_current.clone()
         self.current_frame = self.seed_frame.copy()
@@ -283,7 +287,8 @@ def _load_playground(
 ) -> tuple[InteractiveRolloutEngine, RolloutSeed, RolloutSeedBank, torch.device]:
     device = choose_device(requested_device)
     checkpoint = torch.load(dynamics_checkpoint, map_location="cpu", weights_only=True)
-    if checkpoint.get("model_type") == "spatial_latent_dynamics":
+    model_type = checkpoint.get("model_type")
+    if model_type == "spatial_latent_dynamics":
         dynamics, dynamics_metadata = load_spatial_dynamics_checkpoint(
             dynamics_checkpoint, device
         )
@@ -294,6 +299,24 @@ def _load_playground(
         autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
         if autoencoder.latent_channels != dynamics.latent_channels:
             raise ValueError("autoencoder and dynamics latent channels do not match")
+    elif model_type == "spatial_latent_video_flow":
+        flow, dynamics_metadata = load_spatial_flow_checkpoint(dynamics_checkpoint, device)
+        if dynamics_metadata["autoencoder_sha256"] != _file_sha256(autoencoder_checkpoint):
+            raise ValueError("spatial flow belongs to a different autoencoder checkpoint")
+        autoencoder, _ = load_spatial_autoencoder_checkpoint(autoencoder_checkpoint, device)
+        if autoencoder.latent_channels != flow.latent_channels:
+            raise ValueError("autoencoder and flow latent channels do not match")
+        base_checkpoint = Path(dynamics_metadata["base_dynamics_checkpoint"])
+        if _file_sha256(base_checkpoint) != dynamics_metadata["base_dynamics_sha256"]:
+            raise ValueError("flow base dynamics checkpoint changed after training")
+        base_dynamics, _ = load_spatial_dynamics_checkpoint(base_checkpoint, device)
+        dynamics = FlowStepAdapter(
+            flow,
+            base_dynamics,
+            steps=int(dynamics_metadata["sampling_steps"]),
+            guidance_scale=float(dynamics_metadata["guidance_scale"]),
+            refinement_strength=float(dynamics_metadata["refinement_strength"]),
+        ).to(device)
     else:
         dynamics, dynamics_metadata = load_dynamics_checkpoint(dynamics_checkpoint, device)
         _verify_autoencoder(dynamics_metadata, autoencoder_checkpoint)

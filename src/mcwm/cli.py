@@ -30,6 +30,7 @@ from mcwm.spatial_dynamics import (
     evaluate_saved_spatial_dynamics,
     train_spatial_dynamics,
 )
+from mcwm.spatial_flow import train_spatial_flow
 from mcwm.spatial_training import (
     evaluate_saved_spatial_autoencoder,
     sanity_overfit_spatial_autoencoder,
@@ -386,6 +387,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="fine-tune this saved spatial dynamics checkpoint instead of starting fresh",
     )
+
+    train_flow_parser = commands.add_parser(
+        "train-spatial-flow",
+        help="train an action-conditioned flow model that generates eight future latents jointly",
+    )
+    _add_spatial_dynamics_data_arguments(train_flow_parser)
+    train_flow_parser.set_defaults(batch_size=16)
+    train_flow_parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/spatial-flow-v4-pilot")
+    )
+    train_flow_parser.add_argument(
+        "--base-dynamics-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-dynamics-v4-multistep/best.pt"),
+    )
+    train_flow_parser.add_argument("--epochs", type=int, default=5)
+    train_flow_parser.add_argument("--maximum-sequences", type=int, default=4_000)
+    train_flow_parser.add_argument(
+        "--maximum-validation-sequences", type=int, default=256
+    )
+    train_flow_parser.add_argument("--horizon", type=int, default=8)
+    train_flow_parser.add_argument("--hidden-channels", type=int, default=128)
+    train_flow_parser.add_argument("--condition-dim", type=int, default=128)
+    train_flow_parser.add_argument("--learning-rate", type=float, default=3e-4)
+    train_flow_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    train_flow_parser.add_argument("--action-dropout", type=float, default=0.15)
+    train_flow_parser.add_argument("--sampling-steps", type=int, default=8)
+    train_flow_parser.add_argument("--guidance-scale", type=float, default=2.0)
+    train_flow_parser.add_argument("--refinement-strength", type=float, default=0.2)
+    train_flow_parser.add_argument("--initial-checkpoint", type=Path)
 
     evaluate_spatial_dynamics_parser = commands.add_parser(
         "evaluate-spatial-dynamics",
@@ -804,6 +835,7 @@ def main(argv: list[str] | None = None) -> int:
             args.processed_dir,
             args.autoencoder_checkpoint,
             args.output_dir,
+            base_dynamics_checkpoint=args.base_dynamics_checkpoint,
             epochs=args.epochs,
             batch_size=args.batch_size,
             encode_batch_size=args.encode_batch_size,
@@ -908,6 +940,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"checkpoint:                  {result.checkpoint}")
         print(f"visual:                      {result.comparison_grid}")
+        return 0
+
+    if args.command == "train-spatial-flow":
+        result = train_spatial_flow(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            maximum_sequences=args.maximum_sequences,
+            maximum_validation_sequences=args.maximum_validation_sequences,
+            horizon=args.horizon,
+            hidden_channels=args.hidden_channels,
+            condition_dim=args.condition_dim,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            action_dropout=args.action_dropout,
+            sampling_steps=args.sampling_steps,
+            guidance_scale=args.guidance_scale,
+            refinement_strength=args.refinement_strength,
+            initial_checkpoint=args.initial_checkpoint,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        metrics = result.metrics
+        print(f"device:                {result.device}")
+        print(f"flow parameters:       {result.parameter_count:,}")
+        print(f"training clips:        {result.training_sequences:,}")
+        print(f"sampled pixel MSE:     {metrics.sampled_pixel_mse:.6f}")
+        print(f"copy pixel MSE:        {metrics.copy_pixel_mse:.6f}")
+        print(f"edge energy ratio:     {metrics.edge_energy_ratio:.3f}")
+        print(f"gradient alignment:    {metrics.gradient_alignment:.3f}")
+        print(f"wrong-action penalty:  {metrics.action_penalty_percent:+.1f}%")
+        print(f"milliseconds per clip: {metrics.milliseconds_per_clip:.1f}")
+        print(f"checkpoint:            {result.checkpoint}")
+        print(f"visual:                {result.filmstrip}")
         return 0
 
     if args.command == "evaluate-spatial-dynamics":
