@@ -253,6 +253,9 @@ class InteractiveRolloutEngine:
         return frame.copy()
 
     def reset(self) -> np.ndarray:
+        reset_sampling = getattr(self.dynamics, "reset_sampling", None)
+        if callable(reset_sampling):
+            reset_sampling()
         self.previous_latent = self.seed_previous.clone()
         self.current_latent = self.seed_current.clone()
         self.current_frame = self.seed_frame.copy()

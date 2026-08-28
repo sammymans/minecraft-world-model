@@ -62,6 +62,7 @@ class RolloutHorizonMetrics:
     action_effect_latent_mse: float
     recursive_edge_ratio: float
     oracle_edge_ratio: float
+    recursive_gradient_cosine: float = 0.0
 
     @property
     def beats_copy_pixel(self) -> bool:
@@ -198,6 +199,13 @@ def recursive_latent_rollout(
     return torch.stack(predictions, dim=1)
 
 
+def _reset_sampling(dynamics: Dynamics, seed: int) -> None:
+    """Reset stochastic dynamics when available, leaving deterministic models alone."""
+    reset = getattr(dynamics, "reset_sampling", None)
+    if callable(reset):
+        reset(seed)
+
+
 def _psnr(mse: float) -> float:
     return 10.0 * math.log10(1.0 / max(mse, 1e-12))
 
@@ -268,6 +276,9 @@ def evaluate_rollouts(
         "recursive_edge_energy",
         "oracle_edge_energy",
         "target_edge_energy",
+        "gradient_dot",
+        "predicted_gradient_squared",
+        "target_gradient_squared",
     )
     sums = {name: np.zeros(dataset.horizon, dtype=np.float64) for name in names}
     examples = 0
@@ -283,9 +294,14 @@ def evaluate_rollouts(
         shuffled = mismatched_actions[offset : offset + count].to(device)
         offset += count
 
+        # Correct and mismatched controls must see identical diffusion noise;
+        # otherwise their difference measures sampling variance instead of actions.
+        rollout_seed = seed + examples * (dataset.horizon + 1)
+        _reset_sampling(dynamics, rollout_seed)
         predicted = recursive_latent_rollout(
             dynamics, latents[:, 0], latents[:, 1], actions
         )
+        _reset_sampling(dynamics, rollout_seed)
         shuffled_predicted = recursive_latent_rollout(
             dynamics, latents[:, 0], latents[:, 1], shuffled
         )
@@ -294,6 +310,7 @@ def evaluate_rollouts(
         for step in range(dataset.horizon):
             target_latent = latents[:, step + 2]
             target_frame = frames[:, step + 2]
+            _reset_sampling(dynamics, rollout_seed + dataset.horizon + step + 1)
             teacher_latent = dynamics(
                 latents[:, step], latents[:, step + 1], actions[:, step]
             )
@@ -346,6 +363,20 @@ def evaluate_rollouts(
                 sums[name][step] += (
                     horizontal.abs().sum().item() + vertical.abs().sum().item()
                 )
+            predicted_horizontal, predicted_vertical = image_gradients(predicted_frame)
+            target_horizontal, target_vertical = image_gradients(target_frame)
+            sums["gradient_dot"][step] += (
+                (predicted_horizontal * target_horizontal).sum().item()
+                + (predicted_vertical * target_vertical).sum().item()
+            )
+            sums["predicted_gradient_squared"][step] += (
+                predicted_horizontal.square().sum().item()
+                + predicted_vertical.square().sum().item()
+            )
+            sums["target_gradient_squared"][step] += (
+                target_horizontal.square().sum().item()
+                + target_vertical.square().sum().item()
+            )
 
         examples += count
         latent_values += predicted[:, 0].numel()
@@ -384,6 +415,15 @@ def evaluate_rollouts(
                 / max(sums["target_edge_energy"][step], 1e-12),
                 oracle_edge_ratio=sums["oracle_edge_energy"][step]
                 / max(sums["target_edge_energy"][step], 1e-12),
+                recursive_gradient_cosine=sums["gradient_dot"][step]
+                / max(
+                    (
+                        sums["predicted_gradient_squared"][step]
+                        * sums["target_gradient_squared"][step]
+                    )
+                    ** 0.5,
+                    1e-12,
+                ),
             )
         )
     return tuple(results)

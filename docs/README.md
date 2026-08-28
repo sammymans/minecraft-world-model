@@ -33,6 +33,10 @@
   recursive predictions drift, five-step unrolled training, and the measured
   result: a horizon-scaling gain (-7.6% at five steps, -21% at twenty) that
   leaves blur as the dominant failure and points at deterministic regression.
+- [Learning 11: EDM diffusion pilot](LEARNING_11_EDM_DIFFUSION.md) — the failed
+  DDPM diagnosis, common-noise action evaluation, an anchored EDM U-Net pilot,
+  and the measured result: stable low-noise refinement, but grain rather than
+  recovered block structure, so no browser integration or full-scale run.
 
 `PROJECT.md` is the canonical scope. Features not listed there are out of scope
 unless we deliberately revise the plan.

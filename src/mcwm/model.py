@@ -546,3 +546,294 @@ class SpatialLatentDiffusion(nn.Module):
     @property
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
+
+
+class EDMResidualBlock(nn.Module):
+    """Residual convolution whose normalization is modulated by actions and noise."""
+
+    def __init__(self, channels: int, condition_dim: int):
+        super().__init__()
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.first_norm = nn.GroupNorm(groups, channels)
+        self.first_conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.second_norm = nn.GroupNorm(groups, channels)
+        self.second_conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.condition = nn.Linear(condition_dim, channels * 2)
+        nn.init.zeros_(self.second_conv.weight)
+        nn.init.zeros_(self.second_conv.bias)
+
+    def forward(self, features: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        scale, shift = self.condition(condition).chunk(2, dim=-1)
+        hidden = self.first_norm(features)
+        hidden = hidden * (1 + scale[:, :, None, None]) + shift[:, :, None, None]
+        hidden = self.first_conv(nn.functional.silu(hidden))
+        hidden = self.second_conv(nn.functional.silu(self.second_norm(hidden)))
+        return features + hidden
+
+
+class SpatialLatentEDM(nn.Module):
+    """EDM-preconditioned U-Net for a correction around an anchored latent forecast."""
+
+    def __init__(
+        self,
+        latent_channels: int = 16,
+        action_dim: int = 9,
+        context_steps: int = 4,
+        hidden_channels: int = 64,
+        blocks_per_level: int = 2,
+        *,
+        sigma_data: float = 0.5,
+        action_mean: torch.Tensor | None = None,
+        action_std: torch.Tensor | None = None,
+        latent_mean: torch.Tensor | None = None,
+        latent_std: torch.Tensor | None = None,
+        correction_mean: torch.Tensor | None = None,
+        correction_std: torch.Tensor | None = None,
+    ):
+        super().__init__()
+        if min(latent_channels, action_dim, context_steps, hidden_channels, blocks_per_level) < 1:
+            raise ValueError("all spatial EDM dimensions must be positive")
+        if sigma_data <= 0:
+            raise ValueError("sigma_data must be positive")
+        self.latent_channels = latent_channels
+        self.action_dim = action_dim
+        self.context_steps = context_steps
+        self.hidden_channels = hidden_channels
+        self.blocks_per_level = blocks_per_level
+        self.sigma_data = float(sigma_data)
+
+        def statistic(value: torch.Tensor | None, size: int, fill: float) -> torch.Tensor:
+            result = torch.full((size,), fill) if value is None else value.detach().float().clone()
+            if result.shape != (size,):
+                raise ValueError("normalization statistic has the wrong shape")
+            return result
+
+        action_mean = statistic(action_mean, action_dim, 0.0)
+        action_std = statistic(action_std, action_dim, 1.0)
+        latent_mean = statistic(latent_mean, latent_channels, 0.0)
+        latent_std = statistic(latent_std, latent_channels, 1.0)
+        correction_mean = statistic(correction_mean, latent_channels, 0.0)
+        correction_std = statistic(correction_std, latent_channels, 1.0)
+        if (
+            torch.any(action_std <= 0)
+            or torch.any(latent_std <= 0)
+            or torch.any(correction_std <= 0)
+        ):
+            raise ValueError("normalization standard deviations must be positive")
+        self.register_buffer("action_mean", action_mean)
+        self.register_buffer("action_std", action_std)
+        self.register_buffer("latent_mean", latent_mean.reshape(1, 1, -1, 1, 1))
+        self.register_buffer("latent_std", latent_std.reshape(1, 1, -1, 1, 1))
+        self.register_buffer("correction_mean", correction_mean.reshape(1, -1, 1, 1))
+        self.register_buffer("correction_std", correction_std.reshape(1, -1, 1, 1))
+
+        condition_dim = hidden_channels * 4
+        self.noise_embedding = nn.Sequential(
+            nn.Linear(hidden_channels, condition_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(condition_dim, condition_dim),
+        )
+        self.action_embedding = nn.Sequential(
+            nn.Linear(context_steps * action_dim, condition_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(condition_dim, condition_dim),
+        )
+        self.context_noise_embedding = nn.Sequential(
+            nn.Linear(1, condition_dim),
+            nn.SiLU(inplace=True),
+            nn.Linear(condition_dim, condition_dim),
+        )
+
+        # noisy correction, the actual deterministic anchor, then context frames
+        input_channels = latent_channels * (context_steps + 2)
+        low_channels = hidden_channels * 2
+        self.input = nn.Conv2d(input_channels, hidden_channels, kernel_size=3, padding=1)
+        self.high_blocks = nn.ModuleList(
+            EDMResidualBlock(hidden_channels, condition_dim) for _ in range(blocks_per_level)
+        )
+        self.down = nn.Conv2d(hidden_channels, low_channels, kernel_size=4, stride=2, padding=1)
+        self.low_blocks = nn.ModuleList(
+            EDMResidualBlock(low_channels, condition_dim) for _ in range(blocks_per_level)
+        )
+        self.up = nn.Conv2d(low_channels, hidden_channels, kernel_size=3, padding=1)
+        self.merge = nn.Conv2d(hidden_channels * 2, hidden_channels, kernel_size=3, padding=1)
+        self.output_blocks = nn.ModuleList(
+            EDMResidualBlock(hidden_channels, condition_dim) for _ in range(blocks_per_level)
+        )
+        groups = min(8, hidden_channels)
+        while hidden_channels % groups:
+            groups -= 1
+        self.output = nn.Sequential(
+            nn.GroupNorm(groups, hidden_channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_channels, latent_channels, kernel_size=3, padding=1),
+        )
+        nn.init.zeros_(self.output[-1].weight)
+        nn.init.zeros_(self.output[-1].bias)
+
+    def normalize_correction(
+        self, anchor_latent: torch.Tensor, target_latent: torch.Tensor
+    ) -> torch.Tensor:
+        return (target_latent - anchor_latent - self.correction_mean) / self.correction_std
+
+    def apply_correction(
+        self, anchor_latent: torch.Tensor, normalized_correction: torch.Tensor
+    ) -> torch.Tensor:
+        return anchor_latent + self.correction_mean + normalized_correction * self.correction_std
+
+    def _validate_conditioning(
+        self, context_latents: torch.Tensor, actions: torch.Tensor
+    ) -> None:
+        if context_latents.ndim != 5:
+            raise ValueError("context latents must be [batch, time, channels, height, width]")
+        if context_latents.shape[1:3] != (self.context_steps, self.latent_channels):
+            raise ValueError("context latent time or channel dimension does not match")
+        if actions.shape != (len(context_latents), self.context_steps, self.action_dim):
+            raise ValueError("context actions have the wrong shape")
+
+    def network(
+        self,
+        noisy_correction: torch.Tensor,
+        sigmas: torch.Tensor,
+        anchor_latent: torch.Tensor,
+        context_latents: torch.Tensor,
+        actions: torch.Tensor,
+        context_noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the raw U-Net used inside EDM preconditioning."""
+        self._validate_conditioning(context_latents, actions)
+        if noisy_correction.shape != context_latents[:, -1].shape:
+            raise ValueError("noisy correction must match one context latent")
+        if anchor_latent.shape != noisy_correction.shape:
+            raise ValueError("anchor latent must match the noisy correction")
+        if sigmas.shape != (len(context_latents),):
+            raise ValueError("sigmas must contain one value per batch item")
+        if context_noise is None:
+            context_noise = torch.zeros_like(sigmas)
+        if context_noise.shape != sigmas.shape:
+            raise ValueError("context noise must contain one value per batch item")
+
+        normalized_context = (context_latents - self.latent_mean) / self.latent_std
+        normalized_actions = (actions - self.action_mean[None, None]) / self.action_std[
+            None, None
+        ]
+        sigma_features = timestep_embedding(sigmas.clamp_min(1e-8).log(), self.hidden_channels)
+        condition = self.noise_embedding(sigma_features)
+        condition = condition + self.action_embedding(normalized_actions.flatten(start_dim=1))
+        condition = condition + self.context_noise_embedding(
+            context_noise.clamp_min(0).log1p()[:, None]
+        )
+        batch, _, channels, height, width = normalized_context.shape
+        flattened_context = normalized_context.reshape(batch, -1, height, width)
+        normalized_anchor = (anchor_latent - self.latent_mean[:, 0]) / self.latent_std[:, 0]
+        features = self.input(
+            torch.cat((noisy_correction, normalized_anchor, flattened_context), dim=1)
+        )
+        for block in self.high_blocks:
+            features = block(features, condition)
+        skip = features
+        features = self.down(features)
+        for block in self.low_blocks:
+            features = block(features, condition)
+        features = nn.functional.interpolate(features, size=skip.shape[-2:], mode="nearest")
+        features = self.up(features)
+        features = self.merge(torch.cat((features, skip), dim=1))
+        for block in self.output_blocks:
+            features = block(features, condition)
+        return self.output(features)
+
+    def denoise(
+        self,
+        noisy_correction: torch.Tensor,
+        sigmas: torch.Tensor,
+        anchor_latent: torch.Tensor,
+        context_latents: torch.Tensor,
+        actions: torch.Tensor,
+        context_noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Estimate the clean normalized correction using EDM preconditioning."""
+        sigma = sigmas[:, None, None, None]
+        sigma_data = self.sigma_data
+        denominator = (sigma.square() + sigma_data**2).sqrt()
+        c_skip = sigma_data**2 / (sigma.square() + sigma_data**2)
+        c_out = sigma * sigma_data / denominator
+        c_in = 1 / denominator
+        prediction = self.network(
+            c_in * noisy_correction,
+            sigmas,
+            anchor_latent,
+            context_latents,
+            actions,
+            context_noise,
+        )
+        return c_skip * noisy_correction + c_out * prediction
+
+    @torch.no_grad()
+    def sample(
+        self,
+        anchor_latent: torch.Tensor,
+        context_latents: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        steps: int = 8,
+        sigma_min: float = 0.002,
+        sigma_max: float = 5.0,
+        rho: float = 7.0,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Sample an anchored correction with the deterministic EDM Heun solver."""
+        self._validate_conditioning(context_latents, actions)
+        if anchor_latent.shape != context_latents[:, -1].shape:
+            raise ValueError("anchor latent must match one context latent")
+        if steps < 1 or sigma_min <= 0 or sigma_max <= sigma_min or rho <= 0:
+            raise ValueError("invalid EDM sampling schedule")
+        ramp = torch.linspace(0, 1, steps, device=anchor_latent.device)
+        sigmas = (
+            sigma_max ** (1 / rho)
+            + ramp * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))
+        ).pow(rho)
+        sigmas = torch.cat((sigmas, sigmas.new_zeros(1)))
+        if generator is not None and generator.device != anchor_latent.device:
+            state = torch.randn(
+                anchor_latent.shape, dtype=anchor_latent.dtype, generator=generator
+            ).to(anchor_latent.device)
+        else:
+            state = torch.randn(
+                anchor_latent.shape,
+                device=anchor_latent.device,
+                dtype=anchor_latent.dtype,
+                generator=generator,
+            )
+        state = state * sigmas[0]
+        context_noise = anchor_latent.new_zeros(len(anchor_latent))
+        for index in range(len(sigmas) - 1):
+            sigma = sigmas[index]
+            next_sigma = sigmas[index + 1]
+            batch_sigma = sigma.expand(len(anchor_latent))
+            denoised = self.denoise(
+                state, batch_sigma, anchor_latent, context_latents, actions, context_noise
+            )
+            derivative = (state - denoised) / sigma
+            proposal = state + (next_sigma - sigma) * derivative
+            if next_sigma > 0:
+                next_denoised = self.denoise(
+                    proposal,
+                    next_sigma.expand(len(anchor_latent)),
+                    anchor_latent,
+                    context_latents,
+                    actions,
+                    context_noise,
+                )
+                next_derivative = (proposal - next_denoised) / next_sigma
+                state = state + (next_sigma - sigma) * (
+                    derivative + next_derivative
+                ) / 2
+            else:
+                state = proposal
+        return self.apply_correction(anchor_latent, state)
+
+    @property
+    def parameter_count(self) -> int:
+        return sum(parameter.numel() for parameter in self.parameters())

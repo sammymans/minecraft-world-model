@@ -7,6 +7,7 @@ from mcwm.model import (
     SpatialAutoencoder,
     SpatialLatentDiffusion,
     SpatialLatentDynamics,
+    SpatialLatentEDM,
     TinyAutoencoder,
     cosine_alpha_bars,
     timestep_embedding,
@@ -196,3 +197,60 @@ def test_sampling_clamps_the_recovered_residual() -> None:
     residual = model.normalize_residual(current, sampled)
 
     assert residual.abs().max().item() <= 2.0 + 1e-5
+
+
+def test_spatial_edm_correction_round_trips_and_validates_context() -> None:
+    model = SpatialLatentEDM(
+        latent_channels=3,
+        context_steps=4,
+        hidden_channels=8,
+        blocks_per_level=1,
+        correction_mean=torch.tensor([0.1, -0.2, 0.3]),
+        correction_std=torch.tensor([0.5, 2.0, 1.5]),
+    )
+    anchor = torch.randn(2, 3, 4, 4)
+    target = torch.randn(2, 3, 4, 4)
+    context = torch.randn(2, 4, 3, 4, 4)
+    actions = torch.randn(2, 4, 9)
+    sigmas = torch.tensor([0.1, 1.0])
+
+    correction = model.normalize_correction(anchor, target)
+    denoised = model.denoise(correction, sigmas, anchor, context, actions)
+
+    assert torch.allclose(model.apply_correction(anchor, correction), target, atol=1e-5)
+    assert denoised.shape == correction.shape
+    assert 10_000 < model.parameter_count < 100_000
+    with pytest.raises(ValueError, match="context latent"):
+        model.denoise(correction, sigmas, anchor, context[:, :2], actions[:, :2])
+
+
+class _PerfectEDM(SpatialLatentEDM):
+    def set_target(self, target: torch.Tensor) -> None:
+        self._target = target
+
+    def denoise(
+        self,
+        noisy_correction,
+        sigmas,
+        anchor_latent,
+        context_latents,
+        actions,
+        context_noise=None,
+    ):
+        del noisy_correction, sigmas, anchor_latent, context_latents, actions, context_noise
+        return self._target
+
+
+def test_edm_heun_sampling_recovers_a_perfect_denoisers_correction() -> None:
+    model = _PerfectEDM(
+        latent_channels=3, context_steps=2, hidden_channels=8, blocks_per_level=1
+    )
+    anchor = torch.randn(2, 3, 4, 4)
+    context = torch.randn(2, 2, 3, 4, 4)
+    actions = torch.randn(2, 2, 9)
+    correction = torch.randn(2, 3, 4, 4)
+    model.set_target(correction)
+
+    sampled = model.sample(anchor, context, actions, steps=4)
+
+    assert torch.allclose(sampled, model.apply_correction(anchor, correction), atol=1e-4)

@@ -197,8 +197,10 @@ class SampledDynamics(nn.Module):
         self._seed = seed
         self._calls = 0
 
-    def reset_sampling(self) -> None:
-        """Restart the noise stream so a rollout can be reproduced exactly."""
+    def reset_sampling(self, seed: int | None = None) -> None:
+        """Restart the noise stream so paired rollouts can share exact noise."""
+        if seed is not None:
+            self._seed = seed
         self._calls = 0
 
     def forward(

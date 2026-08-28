@@ -54,6 +54,26 @@ class _ColorDecoder(nn.Module):
         return latents[:, :, None, None].expand(-1, -1, 2, 2)
 
 
+class _SeededNoiseDynamics(nn.Module):
+    """Stochastic dynamics whose output is independent of the supplied action."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seed = 0
+        self.calls = 0
+
+    def reset_sampling(self, seed: int | None = None) -> None:
+        if seed is not None:
+            self.seed = seed
+        self.calls = 0
+
+    def forward(self, previous, current, action):
+        del previous, action
+        generator = torch.Generator().manual_seed(self.seed + self.calls)
+        self.calls += 1
+        return current + torch.randn(current.shape, generator=generator)
+
+
 def test_rollout_dataset_preserves_full_temporal_alignment() -> None:
     episode = _episode()
     latents = _latents(episode)
@@ -131,6 +151,28 @@ def test_copy_dynamics_matches_recursive_copy_baseline() -> None:
         assert horizon.action_effect_latent_mse == pytest.approx(0)
         assert horizon.copy_improvement_percent == pytest.approx(0)
         assert horizon.shuffled_action_pixel_penalty_percent == pytest.approx(0)
+
+
+def test_stochastic_action_comparison_reuses_the_same_noise() -> None:
+    episode = _episode()
+    dataset = EncodedRolloutDataset([episode], [_latents(episode)], horizon=3)
+
+    metrics = evaluate_rollouts(
+        _SeededNoiseDynamics(),
+        _ColorDecoder(),
+        dataset,
+        torch.device("cpu"),
+        horizons=(1, 3),
+        batch_size=2,
+    )
+
+    # The model ignores actions. With common random numbers the correct and
+    # shuffled rollouts are therefore identical instead of differing by noise.
+    assert all(item.action_effect_latent_mse == pytest.approx(0) for item in metrics)
+    assert all(
+        item.shuffled_action_latent_mse == pytest.approx(item.recursive_latent_mse)
+        for item in metrics
+    )
 
 
 def test_metrics_payload_normalizes_numpy_scalars_for_json() -> None:
