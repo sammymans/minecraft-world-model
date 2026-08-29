@@ -318,3 +318,74 @@ Interpret the outcome as follows:
   predicting a motion field and warping the previous latent instead of adding a
   regenerated residual, because warping relocates existing detail rather than
   re-synthesising it and therefore cannot smooth under repeated application.
+
+### Rollout-horizon ablation result (2026-08-29)
+
+Three checkpoints, each fine-tuned from `artifacts/spatial-dynamics-v4/best.pt`
+with identical 30,000 windows, ten epochs, learning rate 1e-4, gradient clip
+1.0, and horizon decay 0.8. Only `--rollout-steps` differed. All three were
+scored by one `evaluate-rollout` sweep over 5,000 broad validation windows;
+copy and decoder-oracle baselines match to six decimals, confirming a single
+shared window set.
+
+Recursive pixel MSE:
+
+| horizon | train@5 | train@10 | train@20 | 10 vs 5 | 20 vs 5 |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.004179 | 0.004204 | 0.004254 | +0.6% | +1.8% |
+| 2 | 0.006444 | 0.006451 | 0.006564 | +0.1% | +1.9% |
+| 5 | 0.010948 | 0.010866 | 0.011075 | -0.7% | +1.2% |
+| 10 | 0.015623 | 0.015232 | 0.015569 | -2.5% | -0.3% |
+| 20 | 0.021114 | **0.019788** | 0.020399 | **-6.3%** | -3.4% |
+
+Mismatched-action pixel penalty, where higher means the controls carry more of
+the prediction:
+
+| horizon | train@5 | train@10 | train@20 |
+|---:|---:|---:|---:|
+| 1 | 109.4% | 107.3% | 103.1% |
+| 5 | 87.9% | 87.6% | 85.8% |
+| 10 | 60.3% | 61.7% | 62.6% |
+| 20 | 34.6% | **39.0%** | 40.4% |
+
+**The training horizon has an optimum near ten steps, and the relationship is
+not monotonic.** Training at ten steps reduces 20-step error 6.3% for a
+negligible 0.6% one-step cost, and raises the 20-step action penalty from 34.6%
+to 39.0%. Training at twenty steps is *worse* than ten on error: it pays 1.8%
+at one step and returns only 3.4% at twenty. Longer-horizon supervision keeps
+improving action reliance monotonically, but its accuracy benefit peaks and
+then reverses, so "train on the horizon you will deploy at" is not the right
+rule. This matches the second interpretation branch stated above.
+
+**The gain is real but not visible.** The winning ten-step filmstrip is
+indistinguishable from the five-step one by eye: the desert seed still washes
+to a flat gradient by `t+20` and the underwater seed still dissolves. A 6%
+error reduction does not change what a person sees.
+
+That is the important conclusion, because it can now be triangulated:
+
+| lever | best gain at 20 steps | visible |
+|---|---:|---|
+| training transitions, 10K to 50K | -8.8% | no |
+| training horizon, 5 to 10 steps | -6.3% | no |
+
+Two independent levers, each moved across a wide range under matched
+conditions, both return single-digit improvements and neither changes the
+rendered result. Neither data volume nor the recursive objective is the
+binding constraint. What remains is the formulation: the model regenerates the
+whole next latent as an additive residual, so each pass is slightly smoother
+than the truth and twenty passes compound into a low-pass filter. Predicting a
+motion field and warping the previous latent would relocate existing detail
+rather than re-synthesising it, and therefore cannot smooth under repeated
+application.
+
+Two axes remain untested and are cheaper than the rebuild: model **capacity**
+(the dynamics network is 255,376 parameters, smaller than the autoencoder that
+feeds it) and the training **distribution** (the cleaning filter rejects every
+transition where attack is held, which is the majority of contractor gameplay
+and biases the surviving data toward uneventful frames).
+
+Artifacts are under `artifacts/v1-horizon-ablation/`. The ten-step checkpoint
+is better than the deployed five-step one at every horizon at or above five,
+with stronger action reliance and no meaningful one-step regression, so it is
+the better demo default irrespective of what follows.
