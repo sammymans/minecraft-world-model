@@ -308,3 +308,54 @@ these $64\times64$ observations.
 2. Why must $a_{t-1}$ be valid even though our first prediction uses $a_t$?
 3. Why are consecutive files from the same session kept in one split?
 4. Why should mouse normalization be fitted only on training actions?
+
+## Tested: should the attack filter be removed? (2026-08-29)
+
+`transition_reason` rejects every transition where left-click is held, which is
+the single largest rejection category. Measured over the processed `vpt_v4`
+episodes, attack accounts for roughly half of all transitions, against 24-36%
+kept as valid. Admitting them would raise clean eight-step windows from about
+515,000 to 1.46 million.
+
+That looked like discarded signal. The reasoning was that volume and
+distribution are different things, and the V1 data ablation only varied volume
+*within* the surviving distribution, so it could not rule out that a different
+distribution helps. The reasoning was sound. The premise was wrong.
+
+Before spending GPU time, we measured what is actually inside the rejected
+transitions. Random 80-episode sample:
+
+| | count | median \|dx\| | mean \|dx\| | \|dx\| > 25 | W held |
+|---|---:|---:|---:|---:|---:|
+| VALID (kept) | 72,081 | 4.0 | 32.5 | 27.9% | 59.2% |
+| ATTACK (rejected) | 103,554 | **0.0** | 8.2 | 7.9% | **9.2%** |
+
+An alphabetical 80-episode sample agreed and additionally showed roughly half
+the frame-to-frame pixel change (5.63 against 10.82).
+
+Attack transitions have a **median camera movement of exactly zero** and hold
+forward movement one sixth as often. The mental picture of attack frames as
+mining, chopping and fighting — and therefore eventful — does not match the
+data. What contractors actually do is stand still and hold left-click while a
+block breaks, and standing still is the definition of a static frame.
+
+So the filter, written to avoid unexplained visual changes, is incidentally
+acting as a **motion filter** that retains the dynamic frames. Admitting attack
+would roughly triple the dataset while pulling forward-movement frequency from
+59% toward 30% and halving mean camera motion. For a model whose measured
+weakness is that action-driven motion is small relative to drift, that is the
+wrong direction.
+
+**Decision: keep rejecting attack.** This is a mismatch between the data and
+the current goal, not a defect in the data. Revisit if the goal broadens from
+controllable movement to modelling interaction — block breaking, tool swings,
+mining — at which point these frames become the signal rather than dilution,
+and would need attack added as an action dimension so the model has a causal
+input for the changes it observes.
+
+A narrower variant remains available and untested: admit only attack
+transitions that also carry real camera motion, about 8,183 of 103,554 in the
+sample. That would add motion-rich data without the static dilution. It ranks
+below weighting the *existing* data toward motion, since 72% of currently kept
+transitions still have `|dx| <= 25` and the `action_balanced` policy counts any
+`|dx| >= 2` as a turn — well under one rendered pixel.
