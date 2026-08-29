@@ -16,6 +16,7 @@ from mcwm.download import DEMO_STEM, download_episode
 from mcwm.interactive import compare_action_scripts, launch_playground
 from mcwm.interactive_v2 import compare_action_scripts_v2, launch_playground_v2
 from mcwm.latent_diffusion_v2 import overfit_latent_diffusion_v2
+from mcwm.latent_rollout_v2 import finetune_rollout_v2
 from mcwm.latent_training_v2 import train_latent_diffusion_v2
 from mcwm.manifest import (
     DATASET_SPLITS,
@@ -258,6 +259,21 @@ def build_parser() -> argparse.ArgumentParser:
     train_spatial_dynamics_parser.add_argument("--pixel-weight", type=float, default=1.0)
     train_spatial_dynamics_parser.add_argument("--patience", type=int, default=5)
     train_spatial_dynamics_parser.add_argument(
+        "--selection-policy",
+        choices=("random", "nested_prefix"),
+        default="random",
+        help=(
+            "transition subset policy; nested_prefix makes smaller seed-matched "
+            "data ablations strict subsets of larger ones"
+        ),
+    )
+    train_spatial_dynamics_parser.add_argument(
+        "--validation-every",
+        type=int,
+        default=1,
+        help="evaluate every N epochs and always on the final epoch",
+    )
+    train_spatial_dynamics_parser.add_argument(
         "--rollout-steps",
         type=int,
         default=1,
@@ -469,7 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_v2_parser = commands.add_parser(
         "train-latent-diffusion-v2",
-        help="train V2 latent diffusion on the full V4 split with held-out evaluation",
+        help="train V2 latent diffusion with fixed held-out evaluation",
     )
     train_v2_parser.add_argument(
         "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
@@ -492,6 +508,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_v2_parser.add_argument("--steps", type=int, default=60_000)
     train_v2_parser.add_argument("--batch-size", type=int, default=8)
+    train_v2_parser.add_argument(
+        "--context-frames",
+        type=int,
+        default=8,
+        help=(
+            "encoded frames conditioning each prediction; 8 is 0.8s of history, "
+            "and a longer window keeps real frames in context deeper into a rollout"
+        ),
+    )
     train_v2_parser.add_argument("--encode-batch-size", type=int, default=128)
     train_v2_parser.add_argument("--base-channels", type=int, default=112)
     train_v2_parser.add_argument("--attention-heads", type=int, default=8)
@@ -507,6 +532,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="target share after adding switch-point examples; every natural window remains",
     )
     train_v2_parser.add_argument("--evaluation-every", type=int, default=2_000)
+    train_v2_parser.add_argument(
+        "--maximum-training-windows",
+        type=int,
+        help=(
+            "use a deterministic nested subset of this many training windows; "
+            "omit to use every available window"
+        ),
+    )
     train_v2_parser.add_argument("--maximum-validation-sequences", type=int, default=512)
     train_v2_parser.add_argument("--sample-count", type=int, default=16)
     train_v2_parser.add_argument("--resume", type=Path)
@@ -515,6 +548,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_v2_parser.add_argument("--seed", type=int, default=7)
     train_v2_parser.add_argument("--device", default="auto")
+
+    finetune_v2_parser = commands.add_parser(
+        "finetune-rollout-v2",
+        help="fine-tune V2 on its own generated context to resist rollout collapse",
+    )
+    finetune_v2_parser.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
+    )
+    finetune_v2_parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    finetune_v2_parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    finetune_v2_parser.add_argument(
+        "--cache-dir", type=Path, default=Path("artifacts/latent-cache-v2")
+    )
+    finetune_v2_parser.add_argument(
+        "--initial-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/full-v4/best.pt"),
+    )
+    finetune_v2_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/rollout-finetune"),
+    )
+    finetune_v2_parser.add_argument("--steps", type=int, default=6_000)
+    finetune_v2_parser.add_argument("--batch-size", type=int, default=8)
+    finetune_v2_parser.add_argument("--encode-batch-size", type=int, default=128)
+    finetune_v2_parser.add_argument("--learning-rate", type=float, default=5e-5)
+    finetune_v2_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    finetune_v2_parser.add_argument(
+        "--generation-steps",
+        type=int,
+        default=8,
+        help="DDIM steps used to build the self-generated context during training",
+    )
+    finetune_v2_parser.add_argument(
+        "--sampling-steps", type=int, default=32, help="DDIM steps used for evaluation"
+    )
+    finetune_v2_parser.add_argument("--rollout-horizon", type=int, default=8)
+    finetune_v2_parser.add_argument("--maximum-context-noise", type=float, default=0.2)
+    finetune_v2_parser.add_argument("--evaluation-every", type=int, default=1_000)
+    finetune_v2_parser.add_argument("--maximum-validation-sequences", type=int, default=256)
+    finetune_v2_parser.add_argument("--rollout-examples", type=int, default=24)
+    finetune_v2_parser.add_argument("--seed", type=int, default=7)
+    finetune_v2_parser.add_argument("--device", default="auto")
 
     play_v2_parser = commands.add_parser(
         "play-v2", help="control a recursively sampled V2 latent-diffusion world"
@@ -556,7 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=32,
         help=(
-            "DDIM steps per imagined frame; 8 loses ~20% of edge energy per "
+            "DDIM steps per imagined frame; 8 loses roughly one fifth of edge energy per "
             "step and washes out by t+3, 32 holds structure, 64 saturates"
         ),
     )
@@ -604,7 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=32,
         help=(
-            "DDIM steps per imagined frame; 8 loses ~20% of edge energy per "
+            "DDIM steps per imagined frame; 8 loses roughly one fifth of edge energy per "
             "step and washes out by t+3, 32 holds structure, 64 saturates"
         ),
     )
@@ -827,7 +910,6 @@ def main(argv: list[str] | None = None) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             encode_batch_size=args.encode_batch_size,
-            minimum_episodes=args.minimum_episodes,
             maximum_transitions=args.maximum_transitions,
             hidden_channels=args.hidden_channels,
             blocks=args.blocks,
@@ -841,6 +923,8 @@ def main(argv: list[str] | None = None) -> int:
             gradient_clip=args.gradient_clip,
             maximum_validation_sequences=args.maximum_validation_sequences,
             initial_checkpoint=args.initial_checkpoint,
+            selection_policy=args.selection_policy,
+            validation_every=args.validation_every,
             seed=args.seed,
             requested_device=args.device,
         )
@@ -976,6 +1060,7 @@ def main(argv: list[str] | None = None) -> int:
             sequences=args.sequences,
             training_steps=args.steps,
             batch_size=args.batch_size,
+            context_frames=args.context_frames,
             encode_batch_size=args.encode_batch_size,
             base_channels=args.base_channels,
             attention_heads=args.attention_heads,
@@ -1021,6 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output_dir,
             training_steps=args.steps,
             batch_size=args.batch_size,
+            context_frames=args.context_frames,
             encode_batch_size=args.encode_batch_size,
             base_channels=args.base_channels,
             attention_heads=args.attention_heads,
@@ -1031,6 +1117,7 @@ def main(argv: list[str] | None = None) -> int:
             maximum_context_noise=args.maximum_context_noise,
             target_action_change_fraction=args.action_change_fraction,
             evaluation_every=args.evaluation_every,
+            maximum_training_windows=args.maximum_training_windows,
             maximum_validation_sequences=args.maximum_validation_sequences,
             sample_count=args.sample_count,
             resume_checkpoint=args.resume,
@@ -1049,6 +1136,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"metrics:                   {result.metrics_path}")
         print(f"validation samples:        {result.samples}")
         print(f"validation action rollout: {result.action_comparison}")
+        return 0
+
+    if args.command == "finetune-rollout-v2":
+        result = finetune_rollout_v2(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.cache_dir,
+            args.initial_checkpoint,
+            args.output_dir,
+            training_steps=args.steps,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            generation_steps=args.generation_steps,
+            sampling_steps=args.sampling_steps,
+            rollout_horizon=args.rollout_horizon,
+            maximum_context_noise=args.maximum_context_noise,
+            evaluation_every=args.evaluation_every,
+            maximum_validation_sequences=args.maximum_validation_sequences,
+            rollout_examples=args.rollout_examples,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        print(f"device:              {result.device}")
+        print(f"training windows:    {result.training_windows:,}")
+        print(f"V2 parameters:       {result.parameter_count:,}")
+        print(f"completed steps:     {result.completed_steps:,}")
+        print(f"best checkpoint:     {result.checkpoint}")
+        print(f"latest checkpoint:   {result.latest_checkpoint}")
+        print(f"metrics:             {result.metrics_path}")
+        print(f"validation samples:  {result.samples}")
+        print(f"action rollout:      {result.action_comparison}")
         return 0
 
     if args.command == "play-v2":

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 import matplotlib
 import numpy as np
@@ -71,6 +73,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         latents: list[torch.Tensor],
         *,
         maximum_transitions: int | None = None,
+        selection_policy: Literal["random", "nested_prefix"] = "random",
         seed: int = 7,
     ):
         if not episodes or len(episodes) != len(latents):
@@ -82,14 +85,22 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
             latent_shapes.add(tuple(int(value) for value in timeline.shape[1:]))
         if len(latent_shapes) != 1:
             raise ValueError("all episodes must use the same spatial latent shape")
+        if selection_policy not in {"random", "nested_prefix"}:
+            raise ValueError("selection_policy must be random or nested_prefix")
         self.episodes = episodes
         self.latents = latents
         self.latent_shape = latent_shapes.pop()
+        self.selection_policy = selection_policy
         self.index = SequenceDataset(episodes, horizon=1).index
         if maximum_transitions is not None and len(self.index) > maximum_transitions:
-            generator = torch.Generator().manual_seed(seed)
-            selected = torch.randperm(len(self.index), generator=generator)[:maximum_transitions]
-            self.index = [self.index[int(item)] for item in selected]
+            if selection_policy == "nested_prefix":
+                self.index = self.index[:maximum_transitions]
+            else:
+                generator = torch.Generator().manual_seed(seed)
+                selected = torch.randperm(len(self.index), generator=generator)[
+                    :maximum_transitions
+                ]
+                self.index = [self.index[int(item)] for item in selected]
 
     @classmethod
     @torch.no_grad()
@@ -102,6 +113,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
         maximum_transitions: int | None = None,
         count_horizon: int = 1,
         encode_batch_size: int = 128,
+        selection_policy: Literal["random", "nested_prefix"] = "random",
         seed: int = 7,
     ) -> SpatialEncodedDynamicsDataset:
         if encode_batch_size < 1:
@@ -141,6 +153,7 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
             episodes,
             timelines,
             maximum_transitions=maximum_transitions,
+            selection_policy=selection_policy,
             seed=seed,
         )
 
@@ -163,6 +176,16 @@ class SpatialEncodedDynamicsDataset(Dataset[dict[str, torch.Tensor]]):
     @property
     def encoded_frames(self) -> int:
         return sum(len(timeline) for timeline in self.latents)
+
+    @property
+    def selection_sha256(self) -> str:
+        """Fingerprint the ordered transition references selected for this dataset."""
+        digest = hashlib.sha256()
+        for episode_index, current_index in self.index:
+            reference = [self.episodes[episode_index].episode, current_index]
+            digest.update(json.dumps(reference, separators=(",", ":")).encode())
+            digest.update(b"\n")
+        return digest.hexdigest()
 
     def normalization_statistics(
         self,
@@ -254,6 +277,16 @@ class SpatialEncodedSequenceDataset(Dataset[dict[str, torch.Tensor]]):
     def encoded_frames(self) -> int:
         return sum(len(timeline) for timeline in self.latents)
 
+    @property
+    def selection_sha256(self) -> str:
+        """Fingerprint the ordered sequence references selected for this dataset."""
+        digest = hashlib.sha256()
+        for episode_index, current_index in self.index:
+            reference = [self.episodes[episode_index].episode, current_index]
+            digest.update(json.dumps(reference, separators=(",", ":")).encode())
+            digest.update(b"\n")
+        return digest.hexdigest()
+
 
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {name: value.to(device) for name, value in batch.items()}
@@ -267,9 +300,7 @@ def _prediction_loss(
     latent_weight: float,
     pixel_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    predicted = dynamics(
-        batch["previous_latent"], batch["current_latent"], batch["action"]
-    )
+    predicted = dynamics(batch["previous_latent"], batch["current_latent"], batch["action"])
     normalized_error = (predicted - batch["target_latent"]) / dynamics.latent_std
     latent_loss = normalized_error.square().mean()
     if pixel_weight:
@@ -404,6 +435,9 @@ def _save_checkpoint(
     rollout_steps: int = 1,
     horizon_decay: float = 1.0,
     initial_checkpoint: Path | None = None,
+    selection_policy: str = "random",
+    training_selection_sha256: str | None = None,
+    validation_every: int = 1,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -421,9 +455,10 @@ def _save_checkpoint(
             "pixel_weight": pixel_weight,
             "rollout_steps": rollout_steps,
             "horizon_decay": horizon_decay,
-            "initial_checkpoint": (
-                None if initial_checkpoint is None else str(initial_checkpoint)
-            ),
+            "initial_checkpoint": (None if initial_checkpoint is None else str(initial_checkpoint)),
+            "selection_policy": selection_policy,
+            "training_selection_sha256": training_selection_sha256,
+            "validation_every": validation_every,
             "autoencoder_checkpoint": str(autoencoder_checkpoint),
             "autoencoder_sha256": autoencoder_sha256,
             "dataset_manifest": str(manifest_path),
@@ -465,10 +500,14 @@ def load_spatial_dynamics_checkpoint(
 def _save_curve(history: dict[str, list[float]], path: Path, *, rollout_steps: int = 1) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(7, 4))
-    axis.plot(history["train"], label="training objective")
-    axis.plot(history["validation"], label="validation objective")
-    axis.plot(history["validation_latent"], label="normalized latent MSE")
-    axis.plot(history["validation_pixel"], label="decoded pixel MSE")
+    training_epochs = np.arange(1, len(history["train"]) + 1)
+    validation_epochs = history.get(
+        "validation_epoch", list(range(1, len(history["validation"]) + 1))
+    )
+    axis.plot(training_epochs, history["train"], label="training objective")
+    axis.plot(validation_epochs, history["validation"], label="validation objective")
+    axis.plot(validation_epochs, history["validation_latent"], label="normalized latent MSE")
+    axis.plot(validation_epochs, history["validation_pixel"], label="decoded pixel MSE")
     axis.set_xlabel("epoch")
     axis.set_ylabel("loss")
     title = "Spatial action-conditioned dynamics"
@@ -504,11 +543,25 @@ def train_spatial_dynamics(
     gradient_clip: float = 0.0,
     maximum_validation_sequences: int = 5_000,
     initial_checkpoint: Path | None = None,
+    selection_policy: Literal["random", "nested_prefix"] = "random",
+    validation_every: int = 1,
     seed: int = 7,
     requested_device: str = "auto",
 ) -> SpatialDynamicsTrainingResult:
-    if min(epochs, batch_size, encode_batch_size, maximum_transitions, patience) < 1:
+    if (
+        min(
+            epochs,
+            batch_size,
+            encode_batch_size,
+            maximum_transitions,
+            patience,
+            validation_every,
+        )
+        < 1
+    ):
         raise ValueError("training sizes and patience must be positive")
+    if selection_policy not in {"random", "nested_prefix"}:
+        raise ValueError("selection_policy must be random or nested_prefix")
     if latent_weight < 0 or pixel_weight < 0 or latent_weight + pixel_weight == 0:
         raise ValueError("loss weights must be non-negative and not both zero")
     if rollout_steps < 1:
@@ -536,6 +589,7 @@ def train_spatial_dynamics(
         maximum_transitions=maximum_transitions,
         count_horizon=rollout_steps,
         encode_batch_size=encode_batch_size,
+        selection_policy=selection_policy,
         seed=seed,
     )
     print(f"encoding frozen validation {window}...")
@@ -547,9 +601,7 @@ def train_spatial_dynamics(
         seed=seed,
     )
     if initial_checkpoint is not None:
-        dynamics, initial_metadata = load_spatial_dynamics_checkpoint(
-            initial_checkpoint, device
-        )
+        dynamics, initial_metadata = load_spatial_dynamics_checkpoint(initial_checkpoint, device)
         if initial_metadata["autoencoder_sha256"] != autoencoder_sha256:
             raise ValueError("the initial dynamics checkpoint uses a different autoencoder")
         if dynamics.latent_channels != training.latent_shape[0]:
@@ -602,6 +654,7 @@ def train_spatial_dynamics(
     )
     history: dict[str, list[float]] = {
         "train": [],
+        "validation_epoch": [],
         "validation": [],
         "validation_latent": [],
         "validation_pixel": [],
@@ -642,18 +695,21 @@ def train_spatial_dynamics(
             total += float(loss.detach()) * count
             examples += count
         train_loss = total / examples
+        history["train"].append(train_loss)
+        validation_due = (epoch + 1) % validation_every == 0 or epoch + 1 == epochs
+        if not validation_due:
+            print(f"epoch {epoch + 1:3d}/{epochs}: train={train_loss:.6f}")
+            continue
         if recursive:
-            validation_loss, validation_latent, validation_pixel = (
-                _recursive_validation_objective(
-                    dynamics,
-                    autoencoder,
-                    validation_windows,
-                    device,
-                    batch_size=batch_size,
-                    latent_weight=latent_weight,
-                    pixel_weight=pixel_weight,
-                    horizon_decay=horizon_decay,
-                )
+            validation_loss, validation_latent, validation_pixel = _recursive_validation_objective(
+                dynamics,
+                autoencoder,
+                validation_windows,
+                device,
+                batch_size=batch_size,
+                latent_weight=latent_weight,
+                pixel_weight=pixel_weight,
+                horizon_decay=horizon_decay,
             )
         else:
             validation_loss, validation_latent, validation_pixel = _validation_objective(
@@ -665,7 +721,7 @@ def train_spatial_dynamics(
                 latent_weight=latent_weight,
                 pixel_weight=pixel_weight,
             )
-        history["train"].append(train_loss)
+        history["validation_epoch"].append(epoch + 1)
         history["validation"].append(validation_loss)
         history["validation_latent"].append(validation_latent)
         history["validation_pixel"].append(validation_pixel)
@@ -701,6 +757,9 @@ def train_spatial_dynamics(
         rollout_steps=rollout_steps,
         horizon_decay=horizon_decay,
         initial_checkpoint=initial_checkpoint,
+        selection_policy=selection_policy,
+        training_selection_sha256=training_windows.selection_sha256,
+        validation_every=validation_every,
     )
     metrics = evaluate_dynamics(
         dynamics, autoencoder, validation, device, batch_size=batch_size, seed=seed
@@ -725,6 +784,12 @@ def train_spatial_dynamics(
                 "initial_checkpoint": (
                     None if initial_checkpoint is None else str(initial_checkpoint)
                 ),
+                "selection_policy": selection_policy,
+                "selection_seed": seed,
+                "training_selection_sha256": training_windows.selection_sha256,
+                "requested_epochs": epochs,
+                "completed_epochs": len(history["train"]),
+                "validation_every": validation_every,
                 "training_transitions": len(training_windows),
                 "encoded_training_frames": training.encoded_frames,
                 "validation_transitions": len(validation_windows),

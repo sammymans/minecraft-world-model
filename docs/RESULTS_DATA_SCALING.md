@@ -164,6 +164,98 @@ selected spatial V4 world model:
 Each dynamics checkpoint stores the SHA-256 fingerprint of its autoencoder.
 Evaluation refuses a mismatched pair.
 
+## V1 nested data ablation (2026-08-28)
+
+The next controlled study measures whether the selected deterministic spatial
+V1 dynamics still benefits from more unique transitions. It does not retrain
+the autoencoder or change the 255,376-parameter dynamics architecture.
+
+The one-step stage uses 10K, 50K, and 100K transitions from one deterministic
+seed-7 ordering. `nested_prefix` guarantees that 10K is a strict subset of 50K
+and 50K is a strict subset of 100K. Each run sees two million training-example
+presentations, which is approximately 62.5K optimizer updates at batch size 32:
+
+| transitions | epochs | validation cadence | example presentations |
+|---:|---:|---:|---:|
+| 10,000 | 200 | every 20 epochs | 2,000,000 |
+| 50,000 | 40 | every 4 epochs | 2,000,000 |
+| 100,000 | 20 | every 2 epochs | 2,000,000 |
+
+The small difference caused by partial final batches is 62,600, 62,520, and
+62,500 optimizer updates respectively. Every artifact records the ordered
+training-reference SHA-256, selection seed, completed epochs, and validation
+cadence. Early stopping is effectively disabled so the compute budget remains
+fixed; the best of the ten validation checkpoints is retained.
+
+Run the one-step stage with:
+
+```bash
+for spec in 10000:200:20 50000:40:4 100000:20:2; do
+  transitions=${spec%%:*}
+  remainder=${spec#*:}
+  epochs=${remainder%%:*}
+  validation_every=${remainder##*:}
+  uv run mcwm train-spatial-dynamics \
+    --maximum-transitions "$transitions" \
+    --selection-policy nested_prefix \
+    --epochs "$epochs" \
+    --validation-every "$validation_every" \
+    --patience 1000 \
+    --batch-size 32 \
+    --learning-rate 3e-4 \
+    --output-dir "artifacts/v1-data-ablation/one-step-$transitions" \
+    --device mps
+done
+```
+
+Each one-step checkpoint then receives the same demo-oriented recursive
+fine-tune used by the selected V1 model:
+
+```bash
+for transitions in 10000 50000 100000; do
+  uv run mcwm train-spatial-dynamics \
+    --initial-checkpoint "artifacts/v1-data-ablation/one-step-$transitions/best.pt" \
+    --maximum-transitions 30000 \
+    --selection-policy nested_prefix \
+    --rollout-steps 5 \
+    --horizon-decay 0.8 \
+    --gradient-clip 1.0 \
+    --maximum-validation-sequences 5000 \
+    --epochs 10 \
+    --validation-every 1 \
+    --patience 1000 \
+    --batch-size 32 \
+    --learning-rate 1e-4 \
+    --output-dir "artifacts/v1-data-ablation/multistep-$transitions" \
+    --device mps
+done
+```
+
+The comparison uses the unchanged broad validation split, never the final test
+split, and scores both prediction quality and action reliance:
+
+```bash
+for transitions in 10000 50000 100000; do
+  uv run mcwm evaluate-rollout \
+    --dynamics-checkpoint "artifacts/v1-data-ablation/multistep-$transitions/best.pt" \
+    --output-dir "artifacts/v1-data-ablation/rollout-$transitions" \
+    --horizons 1 2 5 10 20 \
+    --maximum-examples 5000 \
+    --split validation \
+    --device mps
+  uv run mcwm compare-actions \
+    --dynamics-checkpoint "artifacts/v1-data-ablation/multistep-$transitions/best.pt" \
+    --camera-step 30 \
+    --output "artifacts/v1-data-ablation/action-comparison-$transitions.png" \
+    --device mps
+done
+```
+
+The historical `artifacts/spatial-dynamics-v4-multistep` checkpoint remains the
+deployed V1 baseline, but it is not a strict fourth point because its original
+100K subset used random selection. The newly trained 100K nested checkpoint is
+the fair comparison point.
+
 ## Recorded evidence
 
 Each scale records:

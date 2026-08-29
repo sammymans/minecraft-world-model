@@ -8,7 +8,11 @@ import torch
 from torch import nn
 
 from mcwm.latent_data_v2 import CachedTemporalLatentDataset, LatentEpisodeCache
-from mcwm.latent_training_v2 import _action_aware_epoch_indices, _variant_actions
+from mcwm.latent_training_v2 import (
+    NestedTrainingWindowSubset,
+    _action_aware_epoch_indices,
+    _variant_actions,
+)
 
 
 class CountingEncoder(nn.Module):
@@ -67,12 +71,8 @@ def test_disk_cache_reopens_and_temporal_windows_remain_aligned(tmp_path: Path) 
     assert sample["context_latents"].shape == (8, 4, 2, 2)
     assert sample["target_latent"].shape == (4, 2, 2)
     assert torch.equal(sample["actions"], torch.from_numpy(actions[:8]))
-    assert torch.allclose(
-        sample["context_latents"][:, 0, 0, 0], torch.arange(8) / 255, atol=1e-4
-    )
-    assert torch.allclose(
-        sample["target_latent"][0], torch.full((2, 2), 8 / 255), atol=1e-4
-    )
+    assert torch.allclose(sample["context_latents"][:, 0, 0, 0], torch.arange(8) / 255, atol=1e-4)
+    assert torch.allclose(sample["target_latent"][0], torch.full((2, 2), 8 / 255), atol=1e-4)
 
     reopened_encoder = CountingEncoder()
     reopened = LatentEpisodeCache.build(
@@ -106,6 +106,50 @@ def test_action_aware_epoch_keeps_every_window_and_adds_switches(tmp_path: Path)
     assert set(indices.tolist()) == set(range(len(dataset)))
     sampled_change_fraction = float(dataset.action_changes[indices.numpy()].mean())
     assert sampled_change_fraction >= 0.79
+
+
+def test_training_ablation_subsets_are_deterministic_and_nested(tmp_path: Path) -> None:
+    processed = tmp_path / "episode.npz"
+    _write_episode(processed, frames=48)
+    cache = LatentEpisodeCache.build(
+        [processed],
+        CountingEncoder(),
+        torch.device("cpu"),
+        tmp_path / "cache",
+        autoencoder_sha256="e" * 64,
+        manifest_sha256="f" * 64,
+        split="training",
+    )
+    dataset = CachedTemporalLatentDataset(cache)
+    small = NestedTrainingWindowSubset(dataset, 10, seed=7)
+    repeated = NestedTrainingWindowSubset(dataset, 10, seed=7)
+    large = NestedTrainingWindowSubset(dataset, 25, seed=7)
+
+    assert np.array_equal(small.indices, repeated.indices)
+    assert np.array_equal(small.indices, large.indices[: len(small)])
+    assert small.selection_sha256 == repeated.selection_sha256
+    assert sum(small.action_bucket_counts.values()) == len(small)
+    assert small.action_change_count == int(dataset.action_changes[small.indices].sum())
+    assert small.available_windows == len(dataset)
+
+
+def test_training_ablation_uses_all_windows_when_limit_is_omitted(tmp_path: Path) -> None:
+    processed = tmp_path / "episode.npz"
+    _write_episode(processed, frames=24)
+    cache = LatentEpisodeCache.build(
+        [processed],
+        CountingEncoder(),
+        torch.device("cpu"),
+        tmp_path / "cache",
+        autoencoder_sha256="1" * 64,
+        manifest_sha256="2" * 64,
+        split="training",
+    )
+    dataset = CachedTemporalLatentDataset(cache)
+    subset = NestedTrainingWindowSubset(dataset, None, seed=7)
+
+    assert np.array_equal(subset.indices, np.arange(len(dataset)))
+    assert len(subset) == len(dataset)
 
 
 def test_action_variants_only_replace_the_target_driving_action() -> None:

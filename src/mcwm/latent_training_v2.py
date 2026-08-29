@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
@@ -17,6 +18,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from mcwm.dynamics import _file_sha256
 from mcwm.latent_data_v2 import CachedTemporalLatentDataset, LatentEpisodeCache
 from mcwm.latent_diffusion_v2 import (
+    ACTION_BUCKETS,
     LATENT_DIFFUSION_V2_ARCHITECTURE,
     TemporalActionUNet,
     _render_frame,
@@ -69,6 +71,68 @@ class V2TrainingResult:
     parameter_count: int
     completed_steps: int
     device: str
+
+
+class NestedTrainingWindowSubset(Dataset[dict[str, torch.Tensor]]):
+    """A deterministic prefix of one shuffled window order.
+
+    Using the same seed makes the 10K set a strict subset of the 50K set, the
+    50K set a strict subset of the 200K set, and so on.  Normalization remains
+    fixed to the full training cache so data volume is the only changed input
+    to the optimization experiment.
+    """
+
+    def __init__(
+        self,
+        source: CachedTemporalLatentDataset,
+        maximum_windows: int | None,
+        *,
+        seed: int,
+    ) -> None:
+        if maximum_windows is not None and maximum_windows < 1:
+            raise ValueError("maximum training windows must be positive")
+        self.source = source
+        self.available_windows = len(source)
+        count = min(maximum_windows or len(source), len(source))
+        if count == len(source):
+            self.indices = np.arange(len(source), dtype=np.int64)
+        else:
+            order = np.random.default_rng(seed).permutation(len(source))
+            self.indices = order[:count].astype(np.int64, copy=False)
+        self.selection_seed = seed
+        self.selection_sha256 = hashlib.sha256(self.indices.tobytes()).hexdigest()
+        self.action_changes = source.action_changes[self.indices]
+        self.bucket_codes = source.bucket_codes[self.indices]
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
+        return self.source[int(self.indices[item])]
+
+    @property
+    def cache(self) -> LatentEpisodeCache:
+        return self.source.cache
+
+    @property
+    def latent_shape(self) -> tuple[int, int, int]:
+        return self.source.latent_shape
+
+    @property
+    def action_bucket_counts(self) -> dict[str, int]:
+        return {
+            bucket: int((self.bucket_codes == code).sum())
+            for code, bucket in enumerate(ACTION_BUCKETS)
+        }
+
+    @property
+    def action_change_count(self) -> int:
+        return int(self.action_changes.sum())
+
+    def normalization_statistics(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.source.normalization_statistics()
 
 
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
@@ -189,7 +253,7 @@ def evaluate_samples(
 
 
 def _action_aware_epoch_indices(
-    dataset: CachedTemporalLatentDataset,
+    dataset: NestedTrainingWindowSubset,
     target_action_change_fraction: float,
     generator: torch.Generator,
 ) -> torch.Tensor:
@@ -214,7 +278,7 @@ def _action_aware_epoch_indices(
 
 
 def _training_loader(
-    dataset: CachedTemporalLatentDataset,
+    dataset: NestedTrainingWindowSubset,
     *,
     batch_size: int,
     target_action_change_fraction: float,
@@ -239,7 +303,7 @@ def _checkpoint_payload(
     history: dict[str, list],
     validation: dict,
     data_generator: torch.Generator,
-    training: CachedTemporalLatentDataset,
+    training: NestedTrainingWindowSubset,
     validation_references: list,
     autoencoder_checkpoint: Path,
     manifest_path: Path,
@@ -274,7 +338,10 @@ def _checkpoint_payload(
         "validation_metrics": validation,
         "data_generator_state": data_generator.get_state(),
         "fixed_sequence_references": [asdict(reference) for reference in validation_references],
-        "selection_policy": "full_v4_with_action_change_oversampling",
+        "selection_policy": "nested_random_window_prefix_with_action_change_oversampling",
+        "available_training_windows": training.available_windows,
+        "training_window_selection_seed": training.selection_seed,
+        "training_window_indices_sha256": training.selection_sha256,
         "action_bucket_counts": training.action_bucket_counts,
         "action_change_windows": training.action_change_count,
         "training_windows": len(training),
@@ -335,7 +402,7 @@ def _save_training_curve(history: dict[str, list], path: Path) -> None:
     axes[1].set_ylabel("wrong-action penalty (%)")
     axes[1].grid(alpha=0.25)
     axes[1].legend()
-    figure.suptitle("V2 full-data latent diffusion")
+    figure.suptitle("V2 latent-diffusion training")
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
@@ -442,6 +509,7 @@ def train_latent_diffusion_v2(
     *,
     training_steps: int = 60_000,
     batch_size: int = 8,
+    context_frames: int = 8,
     encode_batch_size: int = 128,
     base_channels: int = 112,
     attention_heads: int = 8,
@@ -452,6 +520,7 @@ def train_latent_diffusion_v2(
     maximum_context_noise: float = 0.2,
     target_action_change_fraction: float = 0.35,
     evaluation_every: int = 2_000,
+    maximum_training_windows: int | None = None,
     maximum_validation_sequences: int = 512,
     sample_count: int = 16,
     resume_checkpoint: Path | None = None,
@@ -459,18 +528,23 @@ def train_latent_diffusion_v2(
     seed: int = 7,
     requested_device: str = "auto",
 ) -> V2TrainingResult:
-    if min(
-        training_steps,
-        batch_size,
-        encode_batch_size,
-        sampling_steps,
-        evaluation_every,
-        maximum_validation_sequences,
-        sample_count,
-    ) < 1:
+    if (
+        min(
+            training_steps,
+            batch_size,
+            encode_batch_size,
+            sampling_steps,
+            evaluation_every,
+            maximum_validation_sequences,
+            sample_count,
+        )
+        < 1
+    ):
         raise ValueError("V2 training sizes must be positive")
     if not 0 <= maximum_context_noise < 1:
         raise ValueError("maximum context noise must be in [0, 1)")
+    if maximum_training_windows is not None and maximum_training_windows < 1:
+        raise ValueError("maximum training windows must be positive")
     seed_everything(seed)
     device = choose_device(requested_device)
     autoencoder_sha = _file_sha256(autoencoder_checkpoint)
@@ -503,15 +577,23 @@ def train_latent_diffusion_v2(
         encode_batch_size=encode_batch_size,
         force=force_cache,
     )
-    training = CachedTemporalLatentDataset(train_cache)
-    validation = CachedTemporalLatentDataset(validation_cache)
+    all_training = CachedTemporalLatentDataset(train_cache, context_frames=context_frames)
+    training = NestedTrainingWindowSubset(all_training, maximum_training_windows, seed=seed)
+    validation = CachedTemporalLatentDataset(validation_cache, context_frames=context_frames)
     natural_indices = validation.subset_indices(maximum_validation_sequences, seed=seed)
     change_indices = validation.subset_indices(
         maximum_validation_sequences, action_changes_only=True, seed=seed + 1
     )
     natural_validation: Dataset[dict[str, torch.Tensor]] = Subset(validation, natural_indices)
     change_validation: Dataset[dict[str, torch.Tensor]] = Subset(validation, change_indices)
-    print(f"full training windows: {len(training):,}")
+    print(f"context frames: {context_frames}")
+    print(
+        f"selected training windows: {len(training):,} / {training.available_windows:,} available"
+    )
+    print(
+        f"nested subset fingerprint: {training.selection_sha256[:12]} "
+        f"(seed {training.selection_seed})"
+    )
     print(
         f"training action changes: {training.action_change_count:,} "
         f"({training.action_change_count / len(training):.1%})"
@@ -539,7 +621,7 @@ def train_latent_diffusion_v2(
         model = TemporalActionUNet(
             latent_channels=training.latent_shape[0],
             action_dim=9,
-            context_frames=8,
+            context_frames=context_frames,
             base_channels=base_channels,
             attention_heads=attention_heads,
             diffusion_steps=diffusion_steps,
@@ -557,6 +639,11 @@ def train_latent_diffusion_v2(
             raise ValueError("resume checkpoint uses a different autoencoder")
         if resume.get("dataset_manifest_sha256") != manifest_sha:
             raise ValueError("resume checkpoint uses a different V4 manifest")
+        recorded_selection = resume.get("training_window_indices_sha256")
+        if recorded_selection is None and len(training) != training.available_windows:
+            raise ValueError("resume checkpoint does not identify the requested training subset")
+        if recorded_selection is not None and recorded_selection != training.selection_sha256:
+            raise ValueError("resume checkpoint uses a different training-window subset")
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
@@ -613,9 +700,7 @@ def train_latent_diffusion_v2(
             raw_batch = next(iterator)
         batch = _move_batch(raw_batch, device)
         optimizer.zero_grad(set_to_none=True)
-        loss = diffusion_loss(
-            model, batch, maximum_context_noise=maximum_context_noise
-        )
+        loss = diffusion_loss(model, batch, maximum_context_noise=maximum_context_noise)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -659,16 +744,10 @@ def train_latent_diffusion_v2(
         }
         history["validation_step"].append(step)
         history["natural_correct_loss"].append(natural_metrics.correct_denoising_loss)
-        history["natural_previous_penalty"].append(
-            natural_metrics.previous_action_penalty_percent
-        )
+        history["natural_previous_penalty"].append(natural_metrics.previous_action_penalty_percent)
         history["change_correct_loss"].append(change_metrics.correct_denoising_loss)
-        history["change_previous_penalty"].append(
-            change_metrics.previous_action_penalty_percent
-        )
-        history["sample_psnr_to_oracle_db"].append(
-            sample_metrics.sample_pixel_psnr_to_oracle_db
-        )
+        history["change_previous_penalty"].append(change_metrics.previous_action_penalty_percent)
+        history["sample_psnr_to_oracle_db"].append(sample_metrics.sample_pixel_psnr_to_oracle_db)
         references = [validation.reference(index) for index in natural_indices[:32]]
         payload = _checkpoint_payload(
             model,
@@ -703,10 +782,17 @@ def train_latent_diffusion_v2(
         _write_metrics(
             metrics_path,
             {
-                "stage": "Stage 3 - full V4 held-out training",
+                "stage": (
+                    "Stage 3 - V4 data ablation"
+                    if len(training) < training.available_windows
+                    else "Stage 3 - full V4 held-out training"
+                ),
                 "architecture": LATENT_DIFFUSION_V2_ARCHITECTURE,
                 "parameters": model.parameter_count,
                 "training_windows": len(training),
+                "available_training_windows": training.available_windows,
+                "training_window_selection_seed": training.selection_seed,
+                "training_window_indices_sha256": training.selection_sha256,
                 "validation_windows": len(validation),
                 "action_change_windows": training.action_change_count,
                 "action_bucket_counts": training.action_bucket_counts,

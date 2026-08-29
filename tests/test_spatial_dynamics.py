@@ -63,6 +63,53 @@ def test_spatial_dataset_bounds_transitions_and_calculates_statistics(tmp_path: 
     assert torch.all(statistics[5] > 0)
 
 
+def test_nested_prefix_transition_subsets_are_deterministic_and_nested(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / f"episode-{index}.npz" for index in range(4)]
+    for path in paths:
+        _write_episode(path, frames=12)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+
+    def selected(maximum: int) -> tuple[list[tuple[str, int]], str]:
+        dataset = SpatialEncodedDynamicsDataset.from_paths(
+            paths,
+            autoencoder,
+            torch.device("cpu"),
+            maximum_transitions=maximum,
+            encode_batch_size=4,
+            selection_policy="nested_prefix",
+            seed=7,
+        )
+        references = [
+            (dataset.episodes[episode_index].episode, current_index)
+            for episode_index, current_index in dataset.index
+        ]
+        return references, dataset.selection_sha256
+
+    small, small_fingerprint = selected(8)
+    large, _ = selected(24)
+
+    assert len(small) == 8
+    assert len(large) == 24
+    assert small == large[: len(small)]
+    assert (small, small_fingerprint) == selected(8)
+
+
+def test_spatial_dataset_rejects_unknown_selection_policy(tmp_path: Path) -> None:
+    path = tmp_path / "episode.npz"
+    _write_episode(path)
+    autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
+
+    with pytest.raises(ValueError, match="selection_policy"):
+        SpatialEncodedDynamicsDataset.from_paths(
+            [path],
+            autoencoder,
+            torch.device("cpu"),
+            selection_policy="unknown",  # type: ignore[arg-type]
+        )
+
+
 def test_spatial_prediction_loss_backpropagates_only_into_dynamics(tmp_path: Path) -> None:
     path = tmp_path / "episode.npz"
     _write_episode(path)
@@ -149,8 +196,7 @@ def test_spatial_dynamics_rejects_unversioned_checkpoint(tmp_path: Path) -> None
 
 def _recursive_batch(dataset: SpatialEncodedSequenceDataset, count: int) -> dict[str, torch.Tensor]:
     return {
-        name: torch.stack([dataset[index][name] for index in range(count)])
-        for name in dataset[0]
+        name: torch.stack([dataset[index][name] for index in range(count)]) for name in dataset[0]
     }
 
 
@@ -234,9 +280,7 @@ def test_recursive_loss_matches_one_step_loss_at_horizon_one(tmp_path: Path) -> 
     _write_episode(path, frames=10)
     autoencoder = SpatialAutoencoder(latent_channels=4, base_channels=4)
     autoencoder.requires_grad_(False)
-    encoded = SpatialEncodedDynamicsDataset.from_paths(
-        [path], autoencoder, torch.device("cpu")
-    )
+    encoded = SpatialEncodedDynamicsDataset.from_paths([path], autoencoder, torch.device("cpu"))
     windows = SpatialEncodedSequenceDataset(encoded, horizon=1)
     dynamics = SpatialLatentDynamics(latent_channels=4, hidden_channels=8, blocks=1)
 

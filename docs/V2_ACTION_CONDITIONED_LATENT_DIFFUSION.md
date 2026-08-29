@@ -558,3 +558,59 @@ actions. Each live control becomes the eighth, target-driving action; the
 sampled latent and action are then shifted back into their respective histories.
 Resetting or comparing scripts restores both histories and the diffusion RNG so
 differences between rows are attributable to controls rather than initial noise.
+
+## 16. Data-scaling ablation after the failed visual gate (2026-08-28)
+
+The completed 409,910-window model learned measurable held-out action
+conditioning, but it did **not** pass the interactive visual gate. Detail is
+already substantially degraded at the first sampled frame, generated latents
+then compound the error, and by approximately `t+5` the rollout retains coarse
+colour layout rather than stable scene geometry. The action-comparison artifact
+also shows much weaker visible divergence between forward, left, right, and idle
+than V1. Therefore action-conditioned denoising penalties are evidence that the
+network reads the action, not evidence of a successful controllable demo.
+
+The next experiment isolates training-data volume. `--maximum-training-windows`
+selects a deterministic prefix of one seed-7 random ordering. Consequently the
+10K set is a strict subset of 50K, which is a strict subset of 200K. A window is
+one supervised example containing eight context frames, the eight aligned
+actions ending in the target-driving action, and the target frame. All runs keep
+the model, 60K optimizer steps, batch size, optimizer, full-cache normalization,
+action-change oversampling, validation split, validation indices, diffusion
+noise seeds, and evaluation schedule fixed. This is a fixed-compute data
+ablation; it measures the value of unique training examples, not the effect of
+giving larger datasets proportionally more optimization.
+
+The existing full-data run is the 409,910-window point. Train the three missing
+points with:
+
+```text
+for windows in 10000 50000 200000; do
+  uv run mcwm train-latent-diffusion-v2 \
+    --maximum-training-windows "$windows" \
+    --steps 60000 \
+    --evaluation-every 2000 \
+    --maximum-validation-sequences 512 \
+    --sample-count 16 \
+    --sampling-steps 8 \
+    --seed 7 \
+    --device mps \
+    --output-dir "artifacts/spatial-latent-diffusion-v2/data-ablation-${windows}"
+done
+```
+
+Each output records the selected-window count, available-window count, selection
+seed, and SHA-256 fingerprint. Checkpoint resume rejects a different subset.
+Interpret the results as follows:
+
+- monotonic held-out and visual improvement means data scale is a material
+  bottleneck, although a still-blurry full point means it is not sufficient;
+- an early plateau means model/objective/conditioning is the main bottleneck;
+- better small-set training visuals but worse held-out results indicate
+  memorization rather than learned general dynamics; and
+- improving PSNR without clearer action divergence means appearance modelling
+  is scaling while controllable dynamics is not.
+
+This experiment does not test whether diffusion is intrinsically unsuitable.
+It tests whether this particular small temporal latent U-Net, trained with this
+data and objective, is limited primarily by unique example count.

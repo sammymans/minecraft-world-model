@@ -244,3 +244,77 @@ so a recursively fine-tuned artifact cannot be mistaken for a one-step one.
 It does not add a new encoder, larger network, diffusion model, service, or
 experiment framework. It reuses the current data, checkpoint format, evaluator,
 and browser. That keeps the result attributable and the code small.
+
+## The training/inference horizon mismatch (2026-08-29)
+
+The V1 data ablation measured a decomposition that reframes the blur problem.
+On 5,000 held-out windows, the selected 100K checkpoint scores:
+
+| horizon | recursive | teacher-forced |
+|---:|---:|---:|
+| 1 | 0.004165 | 0.004165 |
+| 2 | 0.006466 | 0.004143 |
+| 5 | 0.010986 | 0.004072 |
+| 10 | 0.015631 | 0.003912 |
+| 20 | 0.020934 | 0.003835 |
+
+Teacher-forced error is flat, and slightly *decreasing*, across every horizon.
+Given a real frame, the one-step model predicts as well at step 20 as at step 1.
+All of the observed degradation is compounding feedback: each prediction is
+marginally smoother than the real latent, that output becomes the next input,
+and repeated application acts as a low-pass filter.
+
+This bounds what more data can buy. At fixed compute, 50K to 100K transitions
+improved one-step latent MSE by only 2.0% and left the wrong-action penalty
+roughly flat, because more data sharpens each individual step rather than
+changing how errors accumulate across twenty of them.
+
+The immediate mismatch is that this model was fine-tuned to unroll **five**
+steps while the interactive rollout and the 20-step evaluator run far longer.
+The model never practises the regime it is asked to perform in. Extending the
+recursive training horizon targets the measured failure directly and needs no
+new architecture, data, or code.
+
+### Planned rollout-horizon ablation
+
+Three points, all fine-tuned from the same one-step checkpoint
+(`artifacts/spatial-dynamics-v4/best.pt`) with identical 30,000 windows, ten
+epochs, learning rate 1e-4, gradient clipping 1.0, and horizon decay 0.8:
+
+| rollout steps | status | approximate cost |
+|---:|---|---|
+| 5 | already trained as `spatial-dynamics-v4-multistep` | ~8 minutes |
+| 10 | to train | ~16 minutes |
+| 20 | to train | ~32 minutes |
+
+Unlike the data ablation, this study holds **windows and epochs** fixed rather
+than optimizer compute. Horizon is a change to the training objective, not a
+resource being traded, and per-window cost necessarily scales with the number of
+chained applications. Holding compute fixed instead would have starved the long
+horizons of data and reintroduced the confound the data ablation just removed.
+This design assumes 30,000 windows is past the steep part of the data curve;
+that is consistent with the measured 50K-to-100K saturation but is not proven
+for the recursive objective specifically.
+
+Window availability does not bound the study. Clean training windows number
+435,478 at horizon 5, 377,245 at horizon 10, and 299,520 at horizon 20, so the
+sampled 30,000 is far below supply at every point. The exact 30,000 differ
+across horizons because the underlying valid-window sets differ; only the count,
+seed, and schedule are matched.
+
+Evaluation is the unchanged `evaluate-rollout` sweep at horizons 1, 2, 5, 10,
+and 20 over 5,000 broad validation windows, so copy and decoder-oracle baselines
+stay identical and the three points remain directly comparable.
+
+Interpret the outcome as follows:
+
+- 20-step error falls materially and one-step error does not regress: the
+  mismatch was real and the demo improves with no architecture change;
+- 20-step error falls but one-step error regresses: the objective trades
+  near-term sharpness for long-horizon stability, and the correct horizon is a
+  demo decision rather than a strict win;
+- error is flat across horizons: recursive supervision is exhausted at this
+  model size, and the remaining lever is structural. The next candidate is
+  predicting a motion field and warping the previous latent instead of adding a
+  regenerated residual, because warping relocates existing detail rather than
+  re-synthesising it and therefore cannot smooth under repeated application.
