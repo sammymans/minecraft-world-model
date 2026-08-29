@@ -16,6 +16,7 @@ from mcwm.interactive import (
     run_action_comparison,
     save_action_comparison,
 )
+from mcwm.interactive_v2 import InteractiveLatentDiffusionEngine
 from mcwm.model import SpatialLatentDynamics
 
 
@@ -118,6 +119,50 @@ def test_interactive_engine_accepts_spatial_latents() -> None:
 
     assert frame.shape == (2, 2, 3)
     assert engine.current_latent.shape == (1, 3, 2, 2)
+
+
+class _TemporalMouseDynamics(nn.Module):
+    context_frames = 3
+    latent_channels = 3
+    action_dim = 9
+
+    def sample(
+        self,
+        context_latents: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        steps: int,
+        seed: int,
+    ) -> torch.Tensor:
+        del steps, seed
+        delta = actions[:, -1, ACTION_INDEX["mouse_dx"]].reshape(-1, 1, 1, 1)
+        return context_latents[:, -1] + delta
+
+
+def test_v2_interactive_engine_shifts_latent_and_action_histories() -> None:
+    context = torch.zeros((1, 3, 3, 2, 2))
+    history = torch.zeros((1, 2, 9))
+    engine = InteractiveLatentDiffusionEngine(
+        _SpatialDecoder(),
+        _TemporalMouseDynamics(),  # type: ignore[arg-type]
+        context,
+        history,
+        np.zeros((2, 2, 3), dtype=np.uint8),
+        torch.device("cpu"),
+        sampling_steps=2,
+    )
+
+    engine.step(make_action(mouse_dx=0.25))
+    frame = engine.step(make_action(mouse_dx=0.5))
+
+    assert engine.steps == 2
+    assert torch.allclose(engine.context_latents[:, -1], torch.full((1, 3, 2, 2), 0.75))
+    assert engine.action_history[0, -2:, ACTION_INDEX["mouse_dx"]].tolist() == [0.25, 0.5]
+    assert frame[0, 0, 0] == 191
+    engine.reset()
+    assert engine.steps == 0
+    assert torch.count_nonzero(engine.context_latents) == 0
+    assert torch.count_nonzero(engine.action_history) == 0
 
 
 def test_interactive_engine_reseeds_without_reloading_models() -> None:

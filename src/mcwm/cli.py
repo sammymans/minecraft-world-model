@@ -14,6 +14,9 @@ from mcwm.dataset import (
 )
 from mcwm.download import DEMO_STEM, download_episode
 from mcwm.interactive import compare_action_scripts, launch_playground
+from mcwm.interactive_v2 import compare_action_scripts_v2, launch_playground_v2
+from mcwm.latent_diffusion_v2 import overfit_latent_diffusion_v2
+from mcwm.latent_training_v2 import train_latent_diffusion_v2
 from mcwm.manifest import (
     DATASET_SPLITS,
     DatasetManifest,
@@ -417,6 +420,202 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("artifacts/interactive-rollout/action-comparison.png"),
     )
     compare_actions_parser.add_argument("--device", default="auto")
+
+    overfit_v2_parser = commands.add_parser(
+        "overfit-latent-diffusion-v2",
+        help="run the fixed-256 overfit gate for V2 temporal latent diffusion",
+    )
+    overfit_v2_parser.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
+    )
+    overfit_v2_parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    overfit_v2_parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    overfit_v2_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/fixed-256-action-balanced-v2"),
+    )
+    overfit_v2_parser.add_argument("--sequences", type=int, default=256)
+    overfit_v2_parser.add_argument("--steps", type=int, default=2_000)
+    overfit_v2_parser.add_argument("--batch-size", type=int, default=8)
+    overfit_v2_parser.add_argument("--encode-batch-size", type=int, default=128)
+    overfit_v2_parser.add_argument("--minimum-episodes", type=int, default=8)
+    overfit_v2_parser.add_argument("--base-channels", type=int, default=112)
+    overfit_v2_parser.add_argument("--attention-heads", type=int, default=8)
+    overfit_v2_parser.add_argument("--diffusion-steps", type=int, default=1_000)
+    overfit_v2_parser.add_argument("--sampling-steps", type=int, default=8)
+    overfit_v2_parser.add_argument("--learning-rate", type=float, default=2e-4)
+    overfit_v2_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    overfit_v2_parser.add_argument(
+        "--maximum-context-noise",
+        type=float,
+        default=0.0,
+        help="Stage 2 defaults to clean context; Stage 3 will enable augmentation",
+    )
+    overfit_v2_parser.add_argument(
+        "--rollout-context-noise",
+        type=float,
+        default=0.0,
+        help="context noise level reported to the model during counterfactual rollout",
+    )
+    overfit_v2_parser.add_argument("--seed", type=int, default=7)
+    overfit_v2_parser.add_argument("--device", default="auto")
+
+    train_v2_parser = commands.add_parser(
+        "train-latent-diffusion-v2",
+        help="train V2 latent diffusion on the full V4 split with held-out evaluation",
+    )
+    train_v2_parser.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
+    )
+    train_v2_parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    train_v2_parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    train_v2_parser.add_argument(
+        "--cache-dir", type=Path, default=Path("artifacts/latent-cache-v2")
+    )
+    train_v2_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/full-v4"),
+    )
+    train_v2_parser.add_argument("--steps", type=int, default=60_000)
+    train_v2_parser.add_argument("--batch-size", type=int, default=8)
+    train_v2_parser.add_argument("--encode-batch-size", type=int, default=128)
+    train_v2_parser.add_argument("--base-channels", type=int, default=112)
+    train_v2_parser.add_argument("--attention-heads", type=int, default=8)
+    train_v2_parser.add_argument("--diffusion-steps", type=int, default=1_000)
+    train_v2_parser.add_argument("--sampling-steps", type=int, default=8)
+    train_v2_parser.add_argument("--learning-rate", type=float, default=2e-4)
+    train_v2_parser.add_argument("--weight-decay", type=float, default=1e-5)
+    train_v2_parser.add_argument("--maximum-context-noise", type=float, default=0.2)
+    train_v2_parser.add_argument(
+        "--action-change-fraction",
+        type=float,
+        default=0.35,
+        help="target share after adding switch-point examples; every natural window remains",
+    )
+    train_v2_parser.add_argument("--evaluation-every", type=int, default=2_000)
+    train_v2_parser.add_argument("--maximum-validation-sequences", type=int, default=512)
+    train_v2_parser.add_argument("--sample-count", type=int, default=16)
+    train_v2_parser.add_argument("--resume", type=Path)
+    train_v2_parser.add_argument(
+        "--force-cache", action="store_true", help="re-encode and replace this exact V2 cache"
+    )
+    train_v2_parser.add_argument("--seed", type=int, default=7)
+    train_v2_parser.add_argument("--device", default="auto")
+
+    play_v2_parser = commands.add_parser(
+        "play-v2", help="control a recursively sampled V2 latent-diffusion world"
+    )
+    play_v2_parser.add_argument("--processed-dir", type=Path, default=Path("data/processed/vpt_v4"))
+    play_v2_parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    play_v2_parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    play_v2_parser.add_argument(
+        "--model-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/full-v4/best.pt"),
+    )
+    play_v2_parser.add_argument(
+        "--sample-index",
+        type=int,
+        default=42_750,
+        help=(
+            "clean held-out eight-frame context used as the seed; the default is "
+            "a bright outdoor scene, because dark caves hide all camera motion"
+        ),
+    )
+    play_v2_parser.add_argument(
+        "--camera-step",
+        type=float,
+        default=12.0,
+        help=(
+            "raw mouse delta per camera input; rollouts hold detail near 10-12 "
+            "and dissolve above 30, since blur tracks new content per step"
+        ),
+    )
+    play_v2_parser.add_argument(
+        "--sampling-steps",
+        type=int,
+        default=32,
+        help=(
+            "DDIM steps per imagined frame; 8 loses ~20% of edge energy per "
+            "step and washes out by t+3, 32 holds structure, 64 saturates"
+        ),
+    )
+    play_v2_parser.add_argument("--sampling-seed", type=int, default=7)
+    play_v2_parser.add_argument("--script")
+    play_v2_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/interactive-rollout-v2/scripted-rollout.png"),
+    )
+    play_v2_parser.add_argument("--device", default="auto")
+    play_v2_parser.add_argument("--host", default="127.0.0.1")
+    play_v2_parser.add_argument("--port", type=int, default=8765)
+    play_v2_parser.add_argument("--no-open", action="store_true")
+
+    compare_v2_parser = commands.add_parser(
+        "compare-actions-v2",
+        help="compare V2 action scripts from one shared held-out context",
+    )
+    compare_v2_parser.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
+    )
+    compare_v2_parser.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    compare_v2_parser.add_argument(
+        "--autoencoder-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-autoencoder-v3/best.pt"),
+    )
+    compare_v2_parser.add_argument(
+        "--model-checkpoint",
+        type=Path,
+        default=Path("artifacts/spatial-latent-diffusion-v2/full-v4/best.pt"),
+    )
+    compare_v2_parser.add_argument(
+        "--scripts",
+        nargs="+",
+        default=("w+sprint*6", "look_left*6", "look_right*6", "idle*6"),
+    )
+    compare_v2_parser.add_argument("--sample-index", type=int, default=42_750)
+    compare_v2_parser.add_argument("--camera-step", type=float, default=12.0)
+    compare_v2_parser.add_argument(
+        "--sampling-steps",
+        type=int,
+        default=32,
+        help=(
+            "DDIM steps per imagined frame; 8 loses ~20% of edge energy per "
+            "step and washes out by t+3, 32 holds structure, 64 saturates"
+        ),
+    )
+    compare_v2_parser.add_argument("--sampling-seed", type=int, default=7)
+    compare_v2_parser.add_argument("--tile", type=int, default=192)
+    compare_v2_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("artifacts/interactive-rollout-v2/action-comparison.png"),
+    )
+    compare_v2_parser.add_argument("--device", default="auto")
     return parser
 
 
@@ -628,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
             epochs=args.epochs,
             batch_size=args.batch_size,
             encode_batch_size=args.encode_batch_size,
+            minimum_episodes=args.minimum_episodes,
             maximum_transitions=args.maximum_transitions,
             hidden_channels=args.hidden_channels,
             blocks=args.blocks,
@@ -754,6 +954,140 @@ def main(argv: list[str] | None = None) -> int:
             list(args.scripts),
             sample_index=args.sample_index,
             camera_step=args.camera_step,
+            tile=args.tile,
+            output_path=args.output,
+            requested_device=args.device,
+        )
+        print(f"device:         {result.device}")
+        print(f"held-out seeds: {seed_count:,}")
+        print(f"episode:        {result.episode}")
+        print(f"seed step:      {result.current_step}")
+        print(f"scripts:        {len(args.scripts)}")
+        print(f"imagined steps: {result.steps}")
+        print(f"visual:         {result.output}")
+        return 0
+
+    if args.command == "overfit-latent-diffusion-v2":
+        result = overfit_latent_diffusion_v2(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.output_dir,
+            sequences=args.sequences,
+            training_steps=args.steps,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            base_channels=args.base_channels,
+            attention_heads=args.attention_heads,
+            diffusion_steps=args.diffusion_steps,
+            sampling_steps=args.sampling_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            maximum_context_noise=args.maximum_context_noise,
+            rollout_context_noise=args.rollout_context_noise,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        metrics = result.metrics
+        print(f"device:                       {result.device}")
+        print(f"fixed sequences:              {metrics.sequences}")
+        print(f"V2 parameters:                {result.parameter_count:,}")
+        print(f"initial denoising loss:        {metrics.initial_denoising_loss:.6f}")
+        print(f"final denoising loss:          {metrics.final_denoising_loss:.6f}")
+        print(f"loss reduction:                {metrics.loss_reduction_percent:.1f}%")
+        print(f"shuffled-action degradation:  {metrics.shuffled_action_degradation_percent:+.1f}%")
+        print(
+            "shuffled sample degradation:  "
+            f"{metrics.shuffled_action_sample_degradation_percent:+.1f}%"
+        )
+        print(f"sample PSNR:                   {metrics.sample_pixel_psnr_db:.2f} dB")
+        print(f"copy baseline PSNR:            {metrics.copy_pixel_psnr_db:.2f} dB")
+        print(f"sample edge ratio:             {metrics.sample_edge_ratio:.3f}")
+        print(f"five-step action effect L1:    {metrics.five_step_action_effect_pixel_l1:.6f}")
+        print(f"five-step total drift L1:      {metrics.five_step_total_drift_pixel_l1:.6f}")
+        print(f"action share of drift:         {metrics.action_share_of_drift_percent:.1f}%")
+        print(f"sampled latents finite:        {metrics.sampled_latents_finite}")
+        print(f"checkpoint:                    {result.checkpoint}")
+        print(f"samples:                       {result.samples}")
+        print(f"five-step action rollout:      {result.action_comparison}")
+        return 0
+
+    if args.command == "train-latent-diffusion-v2":
+        result = train_latent_diffusion_v2(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.cache_dir,
+            args.output_dir,
+            training_steps=args.steps,
+            batch_size=args.batch_size,
+            encode_batch_size=args.encode_batch_size,
+            base_channels=args.base_channels,
+            attention_heads=args.attention_heads,
+            diffusion_steps=args.diffusion_steps,
+            sampling_steps=args.sampling_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            maximum_context_noise=args.maximum_context_noise,
+            target_action_change_fraction=args.action_change_fraction,
+            evaluation_every=args.evaluation_every,
+            maximum_validation_sequences=args.maximum_validation_sequences,
+            sample_count=args.sample_count,
+            resume_checkpoint=args.resume,
+            force_cache=args.force_cache,
+            seed=args.seed,
+            requested_device=args.device,
+        )
+        print(f"device:                    {result.device}")
+        print(f"training windows:          {result.training_windows:,}")
+        print(f"validation windows:        {result.validation_windows:,}")
+        print(f"training action changes:   {result.action_change_windows:,}")
+        print(f"V2 parameters:             {result.parameter_count:,}")
+        print(f"completed steps:           {result.completed_steps:,}")
+        print(f"best checkpoint:           {result.checkpoint}")
+        print(f"latest checkpoint:         {result.latest_checkpoint}")
+        print(f"metrics:                   {result.metrics_path}")
+        print(f"validation samples:        {result.samples}")
+        print(f"validation action rollout: {result.action_comparison}")
+        return 0
+
+    if args.command == "play-v2":
+        result, seed_count = launch_playground_v2(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.model_checkpoint,
+            sample_index=args.sample_index,
+            camera_step=args.camera_step,
+            sampling_steps=args.sampling_steps,
+            sampling_seed=args.sampling_seed,
+            script=args.script,
+            output_path=args.output,
+            requested_device=args.device,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+        )
+        print(f"device:         {result.device}")
+        print(f"held-out seeds: {seed_count:,}")
+        print(f"episode:        {result.episode}")
+        print(f"seed step:      {result.current_step}")
+        print(f"imagined steps: {result.steps}")
+        if result.output is not None:
+            print(f"visual:         {result.output}")
+        return 0
+
+    if args.command == "compare-actions-v2":
+        result, seed_count = compare_action_scripts_v2(
+            args.processed_dir,
+            args.manifest,
+            args.autoencoder_checkpoint,
+            args.model_checkpoint,
+            list(args.scripts),
+            sample_index=args.sample_index,
+            camera_step=args.camera_step,
+            sampling_steps=args.sampling_steps,
+            sampling_seed=args.sampling_seed,
             tile=args.tile,
             output_path=args.output,
             requested_device=args.device,
