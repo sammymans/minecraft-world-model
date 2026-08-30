@@ -6,6 +6,11 @@ import argparse
 from pathlib import Path
 
 from mcwm.cleaning import audit_transitions
+from mcwm.data_infrastructure import (
+    build_public_dataset_catalog,
+    build_recording_catalog,
+    publish_catalog,
+)
 from mcwm.dataset import (
     ProcessedEpisode,
     SequenceDataset,
@@ -28,6 +33,7 @@ from mcwm.manifest import (
     split_manifest,
 )
 from mcwm.preview import create_preview, inspect_episode
+from mcwm.recorder import CaptureRegion, record_minecraft_episode, verify_recording
 from mcwm.rollout import evaluate_saved_rollouts
 from mcwm.spatial_dynamics import (
     evaluate_saved_spatial_dynamics,
@@ -126,6 +132,81 @@ def build_parser() -> argparse.ArgumentParser:
     dataset_verify.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     dataset_verify.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     dataset_verify.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
+
+    dataset_catalog = commands.add_parser(
+        "dataset-catalog",
+        help="hash and catalog a local public-data snapshot before object-storage upload",
+    )
+    dataset_catalog.add_argument(
+        "--manifest", type=Path, default=Path("data/manifests/vpt_v4_split.jsonl")
+    )
+    dataset_catalog.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    dataset_catalog.add_argument(
+        "--processed-dir", type=Path, default=Path("data/processed/vpt_v4")
+    )
+    dataset_catalog.add_argument(
+        "--output", type=Path, default=Path("artifacts/dataset-catalogs/vpt-v4.json")
+    )
+    dataset_catalog.add_argument("--source-root", type=Path, default=Path("."))
+    dataset_catalog.add_argument("--split", choices=("all", *DATASET_SPLITS), default="all")
+    dataset_catalog.add_argument("--without-raw", action="store_true")
+    dataset_catalog.add_argument("--without-processed", action="store_true")
+    dataset_catalog.add_argument("--target-fps", type=float, default=10.0)
+    dataset_catalog.add_argument("--size", type=int, default=64)
+    dataset_catalog.add_argument("--horizon", type=int, default=8)
+
+    record_minecraft = commands.add_parser(
+        "record-minecraft",
+        help="record a screen region and global controls as a synchronized local episode",
+    )
+    record_minecraft.add_argument("--output-dir", type=Path, default=Path("data/raw/local"))
+    record_minecraft.add_argument("--duration", type=float, default=300.0)
+    record_minecraft.add_argument("--fps", type=float, default=20.0)
+    record_minecraft.add_argument("--countdown", type=float, default=3.0)
+    record_minecraft.add_argument("--left", type=int, default=0)
+    record_minecraft.add_argument("--top", type=int, default=0)
+    record_minecraft.add_argument("--width", type=int, default=1280)
+    record_minecraft.add_argument("--height", type=int, default=720)
+    record_minecraft.add_argument("--episode")
+    record_minecraft.add_argument("--collector")
+    record_minecraft.add_argument("--source-root", type=Path, default=Path("."))
+
+    verify_recording_parser = commands.add_parser(
+        "recording-verify", help="verify one local recording's checksums and synchronization"
+    )
+    verify_recording_parser.add_argument("metadata", type=Path)
+    verify_recording_parser.add_argument("--source-root", type=Path, default=Path("."))
+
+    recording_catalog = commands.add_parser(
+        "recording-catalog",
+        help="catalog one real local recording and its optional processed episode",
+    )
+    recording_catalog.add_argument("metadata", type=Path)
+    recording_catalog.add_argument("--processed", type=Path)
+    recording_catalog.add_argument(
+        "--output", type=Path, default=Path("artifacts/dataset-catalogs/local-recording.json")
+    )
+    recording_catalog.add_argument("--source-root", type=Path, default=Path("."))
+
+    publish_s3 = commands.add_parser(
+        "dataset-publish-s3",
+        help="publish a verified catalog to S3 or an S3-compatible object store",
+    )
+    publish_s3.add_argument("catalog", type=Path)
+    publish_s3.add_argument("--bucket", required=True)
+    publish_s3.add_argument("--prefix", default="minecraft-world-model")
+    publish_s3.add_argument("--source-root", type=Path)
+    publish_s3.add_argument("--workers", type=int, default=4)
+    publish_s3.add_argument("--endpoint-url")
+    publish_s3.add_argument("--region")
+    publish_s3.add_argument("--storage-class")
+    publish_s3.add_argument("--sse", choices=("AES256", "aws:kms"))
+    publish_s3.add_argument("--kms-key-id")
+    publish_s3.add_argument(
+        "--execute",
+        action="store_true",
+        help="perform uploads; without this flag the command only prints the plan",
+    )
 
     inspect = commands.add_parser("inspect-demo", help="inspect video/action alignment")
     inspect.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
@@ -790,6 +871,89 @@ def main(argv: list[str] | None = None) -> int:
         if status.processed_complete != status.episodes:
             raise SystemExit("Processed dataset is incomplete. Run: uv run mcwm dataset-preprocess")
         print("dataset verification passed")
+        return 0
+
+    if args.command == "dataset-catalog":
+        catalog = build_public_dataset_catalog(
+            args.manifest,
+            args.data_dir,
+            args.processed_dir,
+            args.output,
+            source_root=args.source_root,
+            split=args.split,
+            include_raw=not args.without_raw,
+            include_processed=not args.without_processed,
+            target_fps=args.target_fps,
+            image_size=args.size,
+            horizon=args.horizon,
+        )
+        print(f"catalog:       {args.output}")
+        print(f"catalog id:    {catalog.catalog_id}")
+        print(f"objects:       {len(catalog.objects):,}")
+        print(f"catalog bytes: {sum(item.bytes for item in catalog.objects) / 2**30:.2f} GiB")
+        return 0
+
+    if args.command == "record-minecraft":
+        result = record_minecraft_episode(
+            args.output_dir,
+            duration_seconds=args.duration,
+            region=CaptureRegion(args.left, args.top, args.width, args.height),
+            fps=args.fps,
+            countdown_seconds=args.countdown,
+            episode=args.episode,
+            collector=args.collector,
+            source_root=args.source_root,
+        )
+        print(f"episode:  {result.episode}")
+        print(f"frames:   {result.frames:,} at {result.fps:g} Hz")
+        print(f"video:    {result.video_path}")
+        print(f"actions:  {result.actions_path}")
+        print(f"metadata: {result.metadata_path}")
+        return 0
+
+    if args.command == "recording-verify":
+        result = verify_recording(args.metadata, source_root=args.source_root)
+        print(f"episode:        {result.episode}")
+        print(f"video frames:   {result.video_frames:,}")
+        print(f"action records: {result.action_records:,}")
+        print(f"video:          {result.width}x{result.height} at {result.fps:g} Hz")
+        print("recording verification passed")
+        return 0
+
+    if args.command == "recording-catalog":
+        catalog = build_recording_catalog(
+            args.metadata,
+            args.output,
+            source_root=args.source_root,
+            processed_path=args.processed,
+        )
+        print(f"catalog:    {args.output}")
+        print(f"catalog id: {catalog.catalog_id}")
+        print(f"objects:    {len(catalog.objects):,}")
+        return 0
+
+    if args.command == "dataset-publish-s3":
+        result = publish_catalog(
+            args.catalog,
+            args.bucket,
+            args.prefix,
+            source_root=args.source_root,
+            execute=args.execute,
+            workers=args.workers,
+            endpoint_url=args.endpoint_url,
+            region=args.region,
+            storage_class=args.storage_class,
+            sse=args.sse,
+            kms_key_id=args.kms_key_id,
+        )
+        print(f"destination: {result.destination}")
+        print(f"objects:     {result.planned:,}")
+        if result.dry_run:
+            print("dry run only; pass --execute to upload (remote objects are never deleted)")
+        else:
+            print(f"uploaded:    {result.uploaded:,}")
+            print(f"skipped:     {result.skipped:,}")
+            print(f"bytes:       {result.bytes_uploaded / 2**30:.2f} GiB")
         return 0
 
     if args.command == "dataset-summary":

@@ -1,0 +1,109 @@
+{
+  "device": "mps",
+  "camera_step": 75.0,
+  "video_camera_step": 50.0,
+  "v2_sampling_steps": 32,
+  "checkpoints": {
+    "autoencoder": "artifacts/spatial-autoencoder-v3/best.pt",
+    "flat_autoencoder": "artifacts/autoencoder-v2/best.pt",
+    "best_v1": "artifacts/v1-capacity-ablation/multistep-h128b6/best.pt",
+    "v2": "artifacts/spatial-latent-diffusion-v2/full-v4/best.pt"
+  },
+  "seeds": [
+    {
+      "label": "Grassland river",
+      "temporal_seed_index": 12300,
+      "episode": "sleepy-sangria-bat-14ad8f0512d2-20220423-105149",
+      "current_step": 2625
+    },
+    {
+      "label": "Desert village",
+      "temporal_seed_index": 42750,
+      "episode": "cheeky-cornflower-setter-edf57f76f9a2-20220416-094153",
+      "current_step": 783
+    },
+    {
+      "label": "Flower forest",
+      "temporal_seed_index": 41706,
+      "episode": "gimpy-jade-panda-7769c38aa432-20220416-184236",
+      "current_step": 2026
+    }
+  ],
+  "files": [
+    {
+      "path": ".DS_Store",
+      "bytes": 8196,
+      "sha256": "02d0d16bae31a2aa6aacd2b3854533776945753b682ca1277385ff770b98a894"
+    },
+    {
+      "path": "01-source-data-grid.png",
+      "bytes": 728846,
+      "sha256": "313974d1a244f464d8ef871407c4137dabdc1b1b12c4206515cc1ba7f35b17db"
+    },
+    {
+      "path": "02-flat-vs-spatial-reconstruction.png",
+      "bytes": 494317,
+      "sha256": "d82165c8c7358a353665026ee57314fc94977746d717ac6e2e0c2dae74ed4d32"
+    },
+    {
+      "path": "03-v1-recursive-filmstrip.png",
+      "bytes": 1049424,
+      "sha256": "ba406589b89b7c125808ea32b4f51b7057d31082ab372defe70b02e5b7ffe4fb"
+    },
+    {
+      "path": "04-v1-action-comparisons-desert.png",
+      "bytes": 531207,
+      "sha256": "840168aa94d067c24d4690132254c327a995592523129021edf094508d76aba5"
+    },
+    {
+      "path": "04-v1-action-comparisons-flowers.png",
+      "bytes": 556018,
+      "sha256": "16119230e75639f474b5921ce4fe5bd677a8bcde22c0be5f5906902e3e0a0b3b"
+    },
+    {
+      "path": "04-v1-action-comparisons-river.png",
+      "bytes": 521738,
+      "sha256": "1245ea9bc11ace8e1617109fe7d3c2575f7df3ca517a73daa0edccae5b6f6a6f"
+    },
+    {
+      "path": "04-v1-action-comparisons.png",
+      "bytes": 1567193,
+      "sha256": "d7671f7b3774c21b49a5f24e3adafb6eddbbca775069a55ae6dd74e19445f2cd"
+    },
+    {
+      "path": "05-ablation-summary.png",
+      "bytes": 188556,
+      "sha256": "ed71428821ad6805df136a34fe48bbf03646c50b025f2b9d50519e86980f2bac"
+    },
+    {
+      "path": "06-v2-recursive-filmstrip.png",
+      "bytes": 1012507,
+      "sha256": "3d02411ab048ab0ee0b4bf6a03478a7aadb891a7c9f7adbd9910abf1b90d7459"
+    },
+    {
+      "path": "07-v2-action-comparisons-desert.png",
+      "bytes": 625409,
+      "sha256": "7d1d065ce971765d19f445b826f5bfd3f7d3115d28cdaf274489d599acbcde50"
+    },
+    {
+      "path": "07-v2-action-comparisons-flowers.png",
+      "bytes": 666861,
+      "sha256": "d132caa6c6e4be85f9c35a6715b655a592ffe5cb38022a49b4c712536a4ec510"
+    },
+    {
+      "path": "07-v2-action-comparisons-river.png",
+      "bytes": 601651,
+      "sha256": "62b133abddeb4783d594ab9f653df820fe33dec3054578a8a8a16f1b323c0c9f"
+    },
+    {
+      "path": "07-v2-action-comparisons.png",
+      "bytes": 1851713,
+      "sha256": "27e1d52f758f9fe23684b4099bc162e10ce33ac68b9d89bf8e33f6489969928d"
+    },
+    {
+      "path": "08-interactive-demo-v1.mp4",
+      "bytes": 1248407,
+      "sha256": "397500852a55e2aff53200914a6f96f5e69e903ce7cd9b021c93f6fd911a8f3f"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+study,configuration,rollout_step,pixel_mse
+Training data size,10K,20,0.0231650752
+Training data size,50K,20,0.0211265073
+Training data size,100K,20,0.0209339736
+Recursive training horizon,5 steps,20,0.0211144605
+Recursive training horizon,10 steps,20,0.0197877901
+Recursive training horizon,20 steps,20,0.0203987252
+Dynamics capacity,255K,20,0.0206171957
+Dynamics capacity,953K,20,0.0202908578
+Dynamics capacity,1.84M,20,0.0195584460

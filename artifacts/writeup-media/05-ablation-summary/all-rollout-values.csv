@@ -1,0 +1,46 @@
+study,configuration,rollout_step,pixel_mse
+Training data size,10K,1,0.0046627475
+Training data size,10K,2,0.0069813456
+Training data size,10K,5,0.0115769048
+Training data size,10K,10,0.0165712543
+Training data size,10K,20,0.0231650752
+Training data size,50K,1,0.0042515345
+Training data size,50K,2,0.0065411805
+Training data size,50K,5,0.0111352846
+Training data size,50K,10,0.0158055093
+Training data size,50K,20,0.0211265073
+Training data size,100K,1,0.0041646124
+Training data size,100K,2,0.0064664728
+Training data size,100K,5,0.0109857332
+Training data size,100K,10,0.0156314214
+Training data size,100K,20,0.0209339736
+Recursive training horizon,5 steps,1,0.0041789358
+Recursive training horizon,5 steps,2,0.0064437950
+Recursive training horizon,5 steps,5,0.0109477668
+Recursive training horizon,5 steps,10,0.0156233786
+Recursive training horizon,5 steps,20,0.0211144605
+Recursive training horizon,10 steps,1,0.0042043277
+Recursive training horizon,10 steps,2,0.0064511920
+Recursive training horizon,10 steps,5,0.0108663979
+Recursive training horizon,10 steps,10,0.0152321993
+Recursive training horizon,10 steps,20,0.0197877901
+Recursive training horizon,20 steps,1,0.0042535153
+Recursive training horizon,20 steps,2,0.0065637958
+Recursive training horizon,20 steps,5,0.0110745423
+Recursive training horizon,20 steps,10,0.0155694799
+Recursive training horizon,20 steps,20,0.0203987252
+Dynamics capacity,255K,1,0.0042042814
+Dynamics capacity,255K,2,0.0064853805
+Dynamics capacity,255K,5,0.0109515265
+Dynamics capacity,255K,10,0.0153911976
+Dynamics capacity,255K,20,0.0206171957
+Dynamics capacity,953K,1,0.0039309711
+Dynamics capacity,953K,2,0.0061299166
+Dynamics capacity,953K,5,0.0105243232
+Dynamics capacity,953K,10,0.0149200546
+Dynamics capacity,953K,20,0.0202908578
+Dynamics capacity,1.84M,1,0.0038894699
+Dynamics capacity,1.84M,2,0.0060641409
+Dynamics capacity,1.84M,5,0.0105020171
+Dynamics capacity,1.84M,10,0.0147887373
+Dynamics capacity,1.84M,20,0.0195584460

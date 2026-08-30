@@ -1,4 +1,7 @@
 .DS_Store
+.env
+.env.*
+!.env.example
 .venv/
 .pytest_cache/
 .ruff_cache/
@@ -9,4 +12,57 @@ data/*
 !data/manifests/
 data/manifests/*
 !data/manifests/*.jsonl
-artifacts/
+# Keep experiment artifacts local by default, while allowing the small set of
+# final models and publication-ready results listed below into the repository.
+artifacts/*
+
+# Final V1 spatial autoencoder.
+!artifacts/spatial-autoencoder-v3/
+artifacts/spatial-autoencoder-v3/*
+!artifacts/spatial-autoencoder-v3/best.pt
+!artifacts/spatial-autoencoder-v3/metrics.json
+
+# Final V1 dynamics model and its held-out evaluation.
+!artifacts/v1-capacity-ablation/
+artifacts/v1-capacity-ablation/*
+!artifacts/v1-capacity-ablation/multistep-h128b6/
+artifacts/v1-capacity-ablation/multistep-h128b6/*
+!artifacts/v1-capacity-ablation/multistep-h128b6/best.pt
+!artifacts/v1-capacity-ablation/multistep-h128b6/metrics.json
+!artifacts/v1-capacity-ablation/eval-h128b6/
+artifacts/v1-capacity-ablation/eval-h128b6/*
+!artifacts/v1-capacity-ablation/eval-h128b6/metrics.json
+
+# Flat-autoencoder baseline metrics used in the writeup.
+!artifacts/autoencoder-v2/
+artifacts/autoencoder-v2/*
+!artifacts/autoencoder-v2/metrics.json
+
+# Lightweight V2 evidence. The 221 MB best.pt remains ignored and can be
+# published separately as a GitHub Release asset.
+!artifacts/spatial-latent-diffusion-v2/
+artifacts/spatial-latent-diffusion-v2/*
+!artifacts/spatial-latent-diffusion-v2/full-v4/
+artifacts/spatial-latent-diffusion-v2/full-v4/*
+!artifacts/spatial-latent-diffusion-v2/full-v4/metrics.json
+!artifacts/spatial-latent-diffusion-v2/full-v4/training-curve.png
+!artifacts/spatial-latent-diffusion-v2/full-v4/validation-action-rollout.png
+!artifacts/spatial-latent-diffusion-v2/full-v4/validation-samples.png
+
+# Finished writeup media and the CSV values behind the ablation figure.
+!artifacts/writeup-media/
+artifacts/writeup-media/*
+!artifacts/writeup-media/README.md
+!artifacts/writeup-media/manifest.json
+!artifacts/writeup-media/01-source-data-grid.png
+!artifacts/writeup-media/02-flat-vs-spatial-reconstruction.png
+!artifacts/writeup-media/03-v1-recursive-filmstrip.png
+!artifacts/writeup-media/04-v1-action-comparisons.png
+!artifacts/writeup-media/05-ablation-summary.png
+!artifacts/writeup-media/06-v2-recursive-filmstrip.png
+!artifacts/writeup-media/07-v2-action-comparisons.png
+!artifacts/writeup-media/08-interactive-demo-v1.mp4
+!artifacts/writeup-media/05-ablation-summary/
+artifacts/writeup-media/05-ablation-summary/*
+!artifacts/writeup-media/05-ablation-summary/values.csv
+!artifacts/writeup-media/05-ablation-summary/all-rollout-values.csv
