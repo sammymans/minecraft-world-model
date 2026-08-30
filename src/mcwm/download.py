@@ -1,66 +1,73 @@
-"""Download action/state JSONL files from an official VPT index."""
+"""Download a small official VPT demonstration pair."""
 
 from __future__ import annotations
 
-import json
-import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urljoin
 
-DEFAULT_INDEX_URL = (
-    "https://openaipublic.blob.core.windows.net/minecraft-rl/"
-    "snapshots/all_10xx_Jun_29.json"
-)
+DEMO_STEM = "cheeky-cornflower-setter-02e496ce4abb-20220421-092639"
+SECOND_DEMO_STEM = "cheeky-cornflower-setter-02e496ce4abb-20220421-093149"
+DEMO_BASE_URL = "https://openaipublic.blob.core.windows.net/minecraft-rl/data/10.0"
 
 
-def _load_index(source: str) -> dict[str, object]:
-    path = Path(source)
-    if path.exists():
-        with path.open(encoding="utf-8") as handle:
-            return json.load(handle)
-    with urllib.request.urlopen(source) as response:  # noqa: S310
-        return json.load(response)
-
-
-def download_vpt_actions(
-    output_directory: str | Path,
+def download_url(
+    url: str,
+    destination: Path,
+    force: bool = False,
     *,
-    index_source: str = DEFAULT_INDEX_URL,
-    limit: int = 6,
-    start: int = 0,
-) -> list[Path]:
-    index = _load_index(index_source)
-    base_url = str(index["basedir"])
-    relpaths = [
-        str(path) for path in index["relpaths"] if str(path).endswith(".mp4")
-    ]
-    output_directory = Path(output_directory)
-    output_directory.mkdir(parents=True, exist_ok=True)
-    downloaded: list[Path] = []
-    candidates = relpaths[start:]
-    for number, relpath in enumerate(candidates, start=1):
-        if len(downloaded) >= limit:
-            break
-        jsonl_relpath = relpath.removesuffix(".mp4") + ".jsonl"
-        destination = output_directory / Path(jsonl_relpath).name
-        if destination.exists():
-            print(f"[{len(downloaded) + 1}/{limit}] exists: {destination.name}")
-            downloaded.append(destination)
-            continue
-        url = urljoin(base_url, jsonl_relpath)
-        temporary = destination.with_suffix(".jsonl.part")
-        print(f"[{len(downloaded) + 1}/{limit}] downloading: {destination.name}")
-        try:
-            urllib.request.urlretrieve(url, temporary)  # noqa: S310
-        except urllib.error.HTTPError as exc:
-            temporary.unlink(missing_ok=True)
-            if exc.code == 404:
-                print(f"  unavailable in public blob; skipping index item {number}")
-                continue
-            raise
-        temporary.replace(destination)
-        downloaded.append(destination)
-    if len(downloaded) < limit:
-        print(f"warning: only {len(downloaded)} of {limit} requested recordings exist")
-    return downloaded
+    expected_bytes: int | None = None,
+    show_progress: bool = True,
+) -> Path:
+    """Download atomically and optionally verify its manifest size."""
+    if destination.exists() and not force:
+        if expected_bytes is None or destination.stat().st_size == expected_bytes:
+            print(f"Already present: {destination}")
+            return destination
+        raise ValueError(
+            f"Existing file has the wrong size: {destination}; "
+            "use --force to download it again"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    request = urllib.request.Request(url, headers={"User-Agent": "mcwm-learning-project/0.1"})
+
+    print(f"Downloading {url}")
+    with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
+        total = int(response.headers.get("Content-Length", 0))
+        copied = 0
+        next_report = 16 * 1024 * 1024
+        while chunk := response.read(1024 * 1024):
+            output.write(chunk)
+            copied += len(chunk)
+            if show_progress and total and (copied >= next_report or copied == total):
+                print(f"  {copied / 1_048_576:7.1f}/{total / 1_048_576:.1f} MiB", end="\r")
+                next_report += 16 * 1024 * 1024
+    if show_progress and total:
+        print()
+    if expected_bytes is not None and copied != expected_bytes:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(
+            f"Downloaded size mismatch for {destination}: expected {expected_bytes}, got {copied}"
+        )
+    temporary.replace(destination)
+    if not show_progress:
+        print(f"Downloaded: {destination}")
+    return destination
+
+
+def download_episode(data_dir: Path, stem: str, force: bool = False) -> tuple[Path, Path]:
+    """Download one matched VPT 10.0 video/action pair by episode stem."""
+    if not stem or Path(stem).name != stem or Path(stem).suffix:
+        raise ValueError("episode must be a plain filename stem")
+
+    video_path = data_dir / f"{stem}.mp4"
+    action_path = data_dir / f"{stem}.jsonl"
+    download_url(f"{DEMO_BASE_URL}/{video_path.name}", video_path, force=force)
+    download_url(f"{DEMO_BASE_URL}/{action_path.name}", action_path, force=force)
+    return video_path, action_path
+
+
+def download_demo(data_dir: Path, force: bool = False) -> tuple[Path, Path]:
+    """Download the exact video/action pair used by OpenAI's VPT demo."""
+    return download_episode(data_dir, DEMO_STEM, force=force)

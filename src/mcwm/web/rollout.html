@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minecraft Tiny World Model</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    :root {
+      color-scheme: dark;
+      --ground: #0d1012;
+      --surface: #14181a;
+      --raised: #1b2125;
+      --line: #262d31;
+      --line-soft: #1e2427;
+      --ink: #e8ebe9;
+      --muted: #7f8a88;
+      --dim: #59635f;
+      --accent: #d9a441;
+      --accent-ink: #1a1508;
+      --live: #6fbf5e;
+      --alert: #d2705a;
+      --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      overflow: hidden;
+      background: var(--ground);
+      color: var(--ink);
+      font: 400 14px/1.5 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    .app {
+      height: 100dvh;
+      padding: 26px clamp(18px, 3vw, 40px);
+      display: grid;
+      grid-template-columns: minmax(196px, 232px) minmax(0, 1fr) minmax(196px, 232px);
+      gap: clamp(20px, 3vw, 44px);
+      align-items: stretch;
+    }
+
+    /* ---- shared rail vocabulary ---- */
+    .rail { display: flex; flex-direction: column; min-width: 0; align-items: center; }
+    .rail-left { position: relative; justify-content: center; gap: 24px; }
+    .rail-right { justify-content: center; gap: 20px; }
+    .label {
+      font: 500 10px/1 var(--mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    /* ---- masthead ---- */
+    .masthead {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      text-align: center;
+    }
+    h1 {
+      margin: 0;
+      color: var(--accent);
+      font: 600 12px/1.5 var(--mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      text-wrap: balance;
+    }
+
+    /* ---- controls, bottom of the left rail ---- */
+    .groups { display: grid; gap: 18px; justify-items: center; }
+    .group { display: grid; gap: 8px; justify-items: center; }
+    .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      padding: 5px 9px;
+      font: 500 11px/1.4 var(--mono);
+      letter-spacing: .02em;
+      cursor: pointer;
+      transition: color .13s ease, border-color .13s ease, background .13s ease;
+    }
+    button:hover { color: var(--ink); border-color: #384246; background: var(--raised); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-ink);
+      font-weight: 600;
+    }
+    button.primary:hover { background: #e8b355; border-color: #e8b355; color: var(--accent-ink); }
+    button[aria-pressed="true"] { color: var(--accent); border-color: #4a3f22; background: #1d1810; }
+
+    .keys {
+      display: grid;
+      grid-template-columns: auto auto;
+      justify-content: center;
+      align-items: center;
+      gap: 5px 9px;
+      font: 400 11px/1.4 var(--mono);
+      color: var(--dim);
+    }
+    .keys kbd {
+      justify-self: start;
+      font: 500 10px/1 var(--mono);
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--line-soft);
+      border-radius: 4px;
+      padding: 3px 5px;
+    }
+
+    /* ---- centre: the viewport, nothing else ---- */
+    .stage {
+      min-height: 0;
+      height: 100%;
+      width: auto;
+      max-width: 100%;
+      aspect-ratio: 1;
+      justify-self: center;
+      position: relative;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #06080a;
+      cursor: crosshair;
+      outline: none;
+    }
+    .stage:focus-visible { border-color: var(--accent); }
+    #frame {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .crosshair {
+      position: absolute;
+      width: 13px; height: 13px;
+      opacity: .7;
+      pointer-events: none;
+    }
+    .crosshair::before, .crosshair::after {
+      content: ""; position: absolute; background: #fff; box-shadow: 0 0 2px rgba(0,0,0,.9);
+    }
+    .crosshair::before { width: 13px; height: 1.5px; top: 5.75px; }
+    .crosshair::after { width: 1.5px; height: 13px; left: 5.75px; }
+
+    /* ---- telemetry, top of the right rail ---- */
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 11px 4px 9px;
+      font: 500 10px/1 var(--mono);
+      letter-spacing: .14em;
+      color: var(--muted);
+      background: var(--surface);
+    }
+    .status::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .status[data-state="running"] { color: var(--live); border-color: #2b4327; background: #131c12; }
+    .status[data-state="error"] { color: var(--alert); border-color: #46281f; background: #1c1210; }
+
+    .readout { display: grid; gap: 9px; width: 100%; max-width: 214px; }
+    .readout .line {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .readout .value {
+      justify-self: end;
+      text-align: right;
+      font: 500 12px/1.35 var(--mono);
+      font-variant-numeric: tabular-nums;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+    .readout .value.quiet { color: var(--dim); }
+    .chips { justify-self: end; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+    .chip {
+      font: 500 10px/1 var(--mono);
+      letter-spacing: .06em;
+      color: var(--accent);
+      background: #1d1810;
+      border: 1px solid #4a3f22;
+      border-radius: 4px;
+      padding: 3px 5px;
+    }
+    hr { border: 0; border-top: 1px solid var(--line-soft); margin: 2px 0; width: 100%; }
+    .episode { display: grid; gap: 5px; }
+    .episode .value {
+      justify-self: stretch;
+      text-align: left;
+      font: 400 10px/1.6 var(--mono);
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .app {
+        height: auto;
+        min-height: 100dvh;
+        grid-template-columns: 1fr;
+        grid-template-areas: "head" "stage" "side";
+        padding: 18px 16px 28px;
+        gap: 18px;
+      }
+      .rail-left { grid-area: head; }
+      .rail-right { grid-area: side; }
+      .stage { grid-area: stage; width: 100%; height: auto; }
+      .rail-left { justify-content: flex-start; }
+      .masthead { position: static; }
+      .groups { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="rail rail-left">
+      <header class="masthead">
+        <h1>Minecraft tiny world model</h1>
+      </header>
+
+      <div class="groups">
+        <div class="group">
+          <div class="label">Seed</div>
+          <div class="row">
+            <button id="previous-seed">← Prev</button>
+            <button id="random-seed">Random</button>
+            <button id="next-seed">Next →</button>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="label">Rollout</div>
+          <div class="row">
+            <button class="primary" id="pause">Start</button>
+            <button id="single-step">Step once</button>
+            <button id="speed">1 step/s</button>
+            <button id="reset">Reset</button>
+            <button id="capture" aria-pressed="false">Mouse look</button>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="label">Keys</div>
+          <div class="keys">
+            <kbd>WASD</kbd><span>move</span>
+            <kbd>Shift</kbd><span>sprint</span>
+            <kbd>Space</kbd><span>jump</span>
+            <kbd>Click</kbd><span>look around</span>
+            <kbd>N</kbd><span>step once</span>
+            <kbd>Esc</kbd><span>release mouse</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <main class="stage" id="stage" tabindex="0" aria-label="Imagined Minecraft viewport">
+      <img id="frame" alt="Current imagined Minecraft frame">
+      <div class="crosshair"></div>
+    </main>
+
+    <div class="rail rail-right">
+      <span class="status" id="status" data-state="idle" role="status">READY</span>
+
+      <div class="readout">
+        <div class="line"><span class="label">Step</span><span class="value" id="step">t+0</span></div>
+        <div class="line"><span class="label">Held</span><span class="chips" id="action"><span class="value quiet">idle</span></span></div>
+        <div class="line"><span class="label">Mouse</span><span class="value quiet" id="mouse">+0, +0</span></div>
+        <hr>
+        <div class="line"><span class="label">Seed</span><span class="value" id="seed">—</span></div>
+        <div class="line"><span class="label">Frame</span><span class="value" id="seed-frame">—</span></div>
+        <div class="line"><span class="label">Device</span><span class="value" id="device">—</span></div>
+        <div class="episode">
+          <span class="label">Episode</span>
+          <span class="value" id="episode">Loading model state…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const frame = document.querySelector('#frame');
+    const stage = document.querySelector('#stage');
+    const statusEl = document.querySelector('#status');
+    const stepEl = document.querySelector('#step');
+    const actionEl = document.querySelector('#action');
+    const mouseEl = document.querySelector('#mouse');
+    const pauseButton = document.querySelector('#pause');
+    const singleStepButton = document.querySelector('#single-step');
+    const speedButton = document.querySelector('#speed');
+    const captureButton = document.querySelector('#capture');
+    const held = new Set();
+    // The model stays coherent while little new content enters per imagined
+    // step; measured rollouts hold detail near a delta of 10 and dissolve by 30.
+    // Raw pointer deltas accumulated at 10 Hz run far past that, so scale and
+    // cap them the way an in-game sensitivity slider would.
+    const MOUSE_SENSITIVITY = 0.2;
+    const MOUSE_STEP_LIMIT = 10;
+    let running = false;
+    let pending = false;
+    let mouseDx = 0;
+    let mouseDy = 0;
+    let frameUrl = null;
+    let timer = null;
+    let info = null;
+    let playbackFps = 1;
+
+    const keyMap = {
+      KeyW: 'w', KeyA: 'a', KeyS: 's', KeyD: 'd',
+      Space: 'jump', ShiftLeft: 'sprint', ShiftRight: 'sprint',
+      ControlLeft: 'sneak', ControlRight: 'sneak',
+      ArrowLeft: 'look_left', ArrowRight: 'look_right',
+      ArrowUp: 'look_up', ArrowDown: 'look_down'
+    };
+    const stepOnPressCodes = new Set([
+      'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space',
+      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'
+    ]);
+
+    function setStatus(text, state) {
+      statusEl.textContent = text;
+      statusEl.dataset.state = state;
+    }
+
+    function setRunning(value) {
+      running = value;
+      setStatus(running ? 'RUNNING' : 'PAUSED', running ? 'running' : 'idle');
+      pauseButton.textContent = running ? 'Pause' : 'Start';
+    }
+
+    function showHeld(keys) {
+      actionEl.replaceChildren();
+      if (!keys.length || keys[0] === 'IDLE') {
+        const idle = document.createElement('span');
+        idle.className = 'value quiet';
+        idle.textContent = 'idle';
+        actionEl.append(idle);
+        return;
+      }
+      for (const key of keys) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = key;
+        actionEl.append(chip);
+      }
+    }
+
+    function showInfo(value) {
+      info = value;
+      const seedEl = document.querySelector('#seed');
+      seedEl.textContent =
+        `${(info.seed_index + 1).toLocaleString()} / ${info.seed_count.toLocaleString()}`;
+      document.querySelector('#seed-frame').textContent = info.seed_step.toLocaleString();
+      document.querySelector('#device').textContent = info.device;
+      const episodeEl = document.querySelector('#episode');
+      episodeEl.textContent = info.episode;
+      episodeEl.title = info.episode;
+    }
+
+    function showFrame(blob, response) {
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+      frameUrl = URL.createObjectURL(blob);
+      frame.src = frameUrl;
+      stepEl.textContent = `t+${response.headers.get('X-Rollout-Step') || '0'}`;
+      const action = response.headers.get('X-Rollout-Action');
+      if (action) {
+        const [keyText, mouseText] = action.split(' | mouse ');
+        showHeld(keyText.split('+'));
+        mouseEl.textContent = mouseText || '+0, +0';
+      }
+    }
+
+    async function getFrame(path, options = {}) {
+      const response = await fetch(path, options);
+      if (!response.ok) throw new Error(await response.text());
+      showFrame(await response.blob(), response);
+    }
+
+    function sensitize(delta) {
+      const scaled = delta * MOUSE_SENSITIVITY;
+      return Math.max(-MOUSE_STEP_LIMIT, Math.min(MOUSE_STEP_LIMIT, scaled));
+    }
+
+    async function tick(force = false) {
+      if ((!running && !force) || pending) return;
+      pending = true;
+      const dx = sensitize(mouseDx);
+      const dy = sensitize(mouseDy);
+      mouseDx = 0;
+      mouseDy = 0;
+      try {
+        await getFrame('/api/step', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({controls: [...held], mouse_dx: dx, mouse_dy: dy})
+        });
+      } catch (error) {
+        setRunning(false);
+        setStatus('ERROR', 'error');
+        console.error(error);
+      } finally {
+        pending = false;
+      }
+    }
+
+    function goIdle() {
+      showHeld([]);
+      mouseEl.textContent = '+0, +0';
+      setStatus('READY', 'idle');
+    }
+
+    async function selectSeed(index) {
+      if (pending || !info) return;
+      pending = true;
+      setRunning(false);
+      held.clear();
+      mouseDx = mouseDy = 0;
+      setStatus('LOADING', 'idle');
+      try {
+        const response = await fetch('/api/seed', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({index})
+        });
+        if (!response.ok) throw new Error(await response.text());
+        showInfo(await response.json());
+        await getFrame('/api/frame');
+        goIdle();
+      } catch (error) {
+        setStatus('ERROR', 'error');
+        console.error(error);
+      } finally {
+        pending = false;
+      }
+    }
+
+    window.addEventListener('keydown', event => {
+      const control = keyMap[event.code];
+      if (control) {
+        event.preventDefault();
+        held.add(control);
+        if (!running && !event.repeat && stepOnPressCodes.has(event.code)) tick(true);
+      } else if (event.code === 'KeyN') {
+        event.preventDefault();
+        tick(true);
+      } else if (event.code === 'KeyP') {
+        setRunning(!running);
+      } else if (event.code === 'KeyR') {
+        document.querySelector('#reset').click();
+      }
+    });
+    window.addEventListener('keyup', event => {
+      const control = keyMap[event.code];
+      if (control) held.delete(control);
+    });
+    window.addEventListener('blur', () => held.clear());
+    document.addEventListener('mousemove', event => {
+      if (document.pointerLockElement === stage) {
+        mouseDx += event.movementX;
+        mouseDy += event.movementY;
+      }
+    });
+    document.addEventListener('pointerlockchange', () => {
+      const locked = document.pointerLockElement === stage;
+      captureButton.setAttribute('aria-pressed', String(locked));
+      captureButton.textContent = locked ? 'Mouse on' : 'Mouse look';
+    });
+    stage.addEventListener('click', () => stage.requestPointerLock());
+    captureButton.addEventListener('click', () => stage.requestPointerLock());
+    pauseButton.addEventListener('click', () => setRunning(!running));
+    singleStepButton.addEventListener('click', () => tick(true));
+    speedButton.addEventListener('click', () => {
+      if (!info) return;
+      playbackFps = playbackFps === 1 ? info.model_fps : 1;
+      speedButton.textContent = playbackFps === 1 ? '1 step/s' : `${playbackFps} steps/s`;
+      if (timer) clearInterval(timer);
+      timer = setInterval(tick, 1000 / playbackFps);
+    });
+    document.querySelector('#previous-seed').addEventListener('click', () => {
+      if (!info) return;
+      const jump = Math.max(1, Math.floor(info.seed_count / 100));
+      selectSeed((info.seed_index - jump + info.seed_count) % info.seed_count);
+    });
+    document.querySelector('#next-seed').addEventListener('click', () => {
+      if (!info) return;
+      const jump = Math.max(1, Math.floor(info.seed_count / 100));
+      selectSeed((info.seed_index + jump) % info.seed_count);
+    });
+    document.querySelector('#random-seed').addEventListener('click', () => {
+      if (!info || info.seed_count < 2) return;
+      let index = Math.floor(Math.random() * info.seed_count);
+      if (index === info.seed_index) index = (index + 1) % info.seed_count;
+      selectSeed(index);
+    });
+    document.querySelector('#reset').addEventListener('click', async () => {
+      setRunning(false);
+      held.clear();
+      mouseDx = mouseDy = 0;
+      await getFrame('/api/reset', {method: 'POST'});
+      goIdle();
+    });
+
+    async function initialize() {
+      showInfo(await fetch('/api/info').then(response => response.json()));
+      await getFrame('/api/frame');
+      timer = setInterval(tick, 1000 / playbackFps);
+      goIdle();
+      stage.focus();
+    }
+    window.addEventListener('beforeunload', () => {
+      if (timer) clearInterval(timer);
+      if (frameUrl) URL.revokeObjectURL(frameUrl);
+    });
+    initialize().catch(error => {
+      setStatus('ERROR', 'error');
+      console.error(error);
+    });
+  </script>
+</body>
+</html>

@@ -1,38 +1,41 @@
 [project]
-name = "mcwm"
+name = "minecraft-world-model"
 version = "0.1.0"
-description = "A small, robotics-oriented Minecraft world model for learning"
-authors = [
-    { name = "sammymans", email = "sfarnum3@uwo.ca" }
-]
-requires-python = ">=3.11"
+description = "A tiny latent world model for Minecraft"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.11.1",
-    "numpy>=2.4.6",
-    "torch>=2.13.0",
+    "boto3>=1.40",
+    "matplotlib>=3.9",
+    "mss>=10.1",
+    "numpy>=1.26",
+    "opencv-python-headless>=5.0.0.93",
+    "pynput>=1.8",
+    "torch>=2.6",
 ]
 
 [project.scripts]
 mcwm = "mcwm.cli:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.9",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[dependency-groups]
-dev = [
-    "pytest>=9.1.1",
-    "pytest-cov>=7.1.0",
-    "ruff>=0.16.4",
-]
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcwm"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 88
-target-version = "py311"
+line-length = 100
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+select = ["E", "F", "I", "UP", "B"]

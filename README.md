@@ -1,81 +1,59 @@
-# Minecraft World Model
+# Tiny Minecraft World Model
 
-A small, robotics-oriented project for learning action-conditioned world models from Minecraft trajectories.
+A laptop-scale, action-conditioned world model for Minecraft. The project uses
+public OpenAI VPT gameplay recordings to learn how movement and camera controls
+change a compressed visual state, then recursively decodes its predictions into
+future frames.
 
-The current V0 learns:
+The selected V1 model combines a 253K-parameter spatial autoencoder with a
+1.84M-parameter deterministic dynamics network. It responds meaningfully to
+player actions, although its predictions become smoother over longer rollouts.
+The repository also contains the larger V2 diffusion experiment and controlled
+ablations over training-data size, recursive-training horizon, and model capacity.
 
-$$
-\widehat{\Delta s_t}^{\mathrm{move}}
-=
-\Delta s_t^{\mathrm{kin}}+f_\theta(s_t,a_t,\Delta t)
-$$
+## Interactive demo
 
-from public OpenAI VPT state/action recordings. It uses numerical player state rather than pixels so the dynamics, data alignment, and rollout behavior remain easy to inspect.
-
-## Start here
-
-- [Documentation index](docs/README.md)
-- [First-principles roadmap](docs/ROADMAP.md)
-- [Detailed V0 math and design](docs/V0.md)
-- [Hands-on V0 walkthrough](docs/RUN_V0.md)
-- [Measured public-data results](docs/RESULTS_V0.md)
-
-## Setup
-
-Install [uv](https://docs.astral.sh/uv/), then:
-
-~~~bash
+```bash
 uv sync
-~~~
+uv run mcwm play-rollout \
+  --dynamics-checkpoint artifacts/v1-capacity-ablation/multistep-h128b6/best.pt \
+  --sample-index 51575 \
+  --camera-step 50
+```
 
-No GPU is required for V0.
+The playground uses a held-out processed episode as its initial scene, so the
+VPT dataset must be downloaded and preprocessed first.
 
-## Quick workflow
+## Data pipeline
 
-Download the tested 24-recording official VPT subset:
+The CLI can download the public VPT data, preprocess it into synchronized
+64x64 frame/action episodes, build a content-verified catalog, and optionally
+publish that catalog to S3. Uploads are a dry run unless `--execute` is passed.
 
-~~~bash
-uv run mcwm download-vpt --limit 24
-~~~
+```bash
+uv run mcwm dataset-download --manifest data/manifests/vpt_v4.jsonl
+uv run mcwm dataset-preprocess \
+  --manifest data/manifests/vpt_v4.jsonl \
+  --output-dir data/processed/vpt_v4
+```
 
-Audit timing, action coverage, alignment, and leakage-safe splits:
+Copy `.env.example` to `.env`, fill in temporary AWS credentials and a bucket,
+then load those values into the shell before publishing. Boto3 also supports
+the normal `~/.aws` profiles and IAM roles, so keys never need to enter the
+repository.
 
-~~~bash
-uv run mcwm audit-vpt
-~~~
+```bash
+set -a
+source .env
+set +a
+uv run mcwm dataset-catalog
+uv run mcwm dataset-publish-s3 artifacts/dataset-catalogs/vpt-v4.json \
+  --bucket "$MCWM_S3_BUCKET" \
+  --region "$AWS_DEFAULT_REGION" \
+  --execute
+```
 
-Train and evaluate the model:
-
-~~~bash
-uv run mcwm train-v0 --epochs 80
-~~~
-
-Reload and independently evaluate the saved checkpoint:
-
-~~~bash
-uv run mcwm evaluate-v0
-~~~
-
-Training defaults to four native VPT steps per learned transition
-(approximately 5 Hz). Use **--action-repeat 1** to experiment with native 20 Hz
-transitions.
-
-Outputs are written to **artifacts/v0/**:
-
-- **model.pt** — model, normalization statistics, and exact data manifest
-- **metrics.json** — learned and baseline metrics
-- **history.json** — training curve data
-- **rollout.png** — open-loop real versus predicted trajectory
-
-Run the known-dynamics smoke test without downloading Minecraft data:
-
-~~~bash
-uv run mcwm synthetic-v0 --epochs 30
-~~~
-
-Run project checks:
-
-~~~bash
-uv run pytest
-uv run ruff check .
-~~~
+Source code lives in `src/mcwm/`, dataset manifests live in `data/manifests/`,
+and the local models and figures are summarized in
+[the artifact inventory](docs/MODEL_ARTIFACT_INVENTORY.md). Large datasets,
+intermediate checkpoints, and the V2 checkpoint are intentionally ignored by Git.
